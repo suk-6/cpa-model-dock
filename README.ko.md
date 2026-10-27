@@ -10,11 +10,9 @@ CPAModelDock은 [CLIProxyAPI(CPA)](https://github.com/router-for-me/CLIProxyAPI/
 
 테스트 기준 호스트는 **CPA v8.0.44**, 네이티브 **ABI 1**, 협상 가능한 플러그인 JSON 스키마는 **6–7**입니다. 같은 ABI를 쓰는 모든 호스트의 호환성을 보증하지 않습니다. 필요한 관리·리소스 API가 로컬에서 확인한 v8.0.37 소스에도 있지만, **v8.0.37을 테스트된 최소 버전으로 주장하지 않습니다**. 근거: [CPA ABI 상수](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.44/sdk/pluginabi/types.go), [v8.0.37 API 선언](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.37/sdk/pluginapi/types.go), [등록 구현](dispatch.go), [ABI 테스트](dispatch_test.go).
 
-Darwin amd64/arm64, Linux amd64/arm64, Windows amd64의 다섯 플랫폼 빌드가 통과했습니다. Go/ABI 검사, Linux arm64 ABI 스모크 테스트, Node 테스트 38개도 통과했습니다. 정확한 환경, 산출물 크기·해시와 제한은 [검증 문서](docs/verification.md), [빌드 문서](docs/building.md)에 있습니다. Linux 산출물은 **glibc ≥2.34**가 필요하며, Debian에서 만든 이 바이너리는 musl 전용 Alpine을 지원하지 않습니다. Windows에서의 네이티브 로드는 테스트하지 않았습니다.
+Darwin amd64/arm64, Linux amd64/arm64, Windows amd64의 다섯 플랫폼 빌드가 통과했습니다. Go/ABI 검사, Linux arm64 ABI 스모크 테스트, Node 테스트도 통과했습니다. 정확한 환경, 산출물 크기·해시와 제한은 [검증 문서](docs/verification.md), [빌드 문서](docs/building.md)에 있습니다. Linux 산출물은 **glibc ≥2.34**가 필요하며, Debian에서 만든 이 바이너리는 musl 전용 Alpine을 지원하지 않습니다. Windows에서의 네이티브 로드는 테스트하지 않았습니다.
 
-실제 CPA v8.0.44 관리 API에서 네 예제 모두 `POST /validate`가 `valid:true`를 반환했고, `PUT /state`로 리비전 1–4를 저장·영속화했습니다. 테스트 호스트에는 모델 8개가 등록됐지만 라우팅 가능한 자격 증명 수가 0이어서 미리보기는 비어 있었고 자동 확인은 `no_routable_candidates`를 반환했습니다. 이는 **검증과 저장만 확인한 결과**이며 추론 라우팅이나 실제 업그레이드 성공을 증명하지 않습니다. 숨긴 원본의 explain 결과는 `hidden_by_alias`, 상태 404였습니다. 보존 보고서와 재현 방법은 [검증 문서](docs/verification.md)를 참고하세요.
-
-<!-- E2E: 실제 플러그인 추론 라우팅, JSON/SSE 응답 모델 치환, 자동 대상 업그레이드, 재시작 복구의 통합 검증 근거 추가 필요. 관리 API 검증·저장만으로 입증할 수 없음. -->
+2026-10-27에 **실제 CPA v8.0.44와 가짜 OpenAI 호환 업스트림**을 사용한 전체 하네스가 **29 PASS / 0 FAIL / 0 SKIP**으로 완료됐습니다. 업스트림 기록으로 고정 별칭 JSON/SSE 라우팅, 응답 모델 치환, 별칭 전용 목록·거부, 숫자 버전 자동 업그레이드, 대상 제거 시 fallback 없는 실패, 리비전 충돌, 잘못된 상태의 원자적 거부, 재시작 후 정책·이력 복구를 확인했습니다. 실제 제공자 자격 증명 테스트는 아닙니다. 관찰 행에서는 유효한 기본 API 키가 realtime/live guard를 우회하고 Gemini 상세 GET이 숨긴 메타데이터를 노출하는 한계도 확인했습니다. 단위 테스트만의 근거, 소스 확인만의 근거, 미검증 항목은 [검증 문서](docs/verification.md)에 구분했습니다.
 
 ## 설치와 Model Dock 열기
 
@@ -97,7 +95,7 @@ UI는 관리 센터의 기존 `cli-proxy-auth` 또는 구형 `managementKey` 저
 
 개요는 저장된 정책을 보여 줍니다. 별칭·허용 목록 탭은 초안을 편집하며 **변경 저장**은 검증 후 저장하고 **변경 취소**는 확인 후 초안을 버립니다. 별칭 확인과 이력 복원 전에는 초안을 저장하거나 취소해야 합니다. 모델 목록 새로고침은 편집 내용을 유지하지만 동시 정책 변경 시 리비전 충돌이 날 수 있습니다. UI에서 English 또는 한국어를 선택할 수 있습니다.
 
-<!-- E2E: 백엔드/UI 통합 후 실제 관리 센터 안의 UI, 인증 요청, CSP, 키 교체, 충돌 처리 확인 필요. -->
+실제 CPA 근거: 공개 리소스 네 개에 엄격한 CSP가 적용됐고 인증된 관리 호출이 성공했습니다. 별도로 실제 CPA에 연결한 headless Chrome에서 네 탭을 영어·한국어로 렌더링하고 CSP 위반이 없음을 확인했습니다. 관리 센터 iframe에서는 리소스 로딩만 확인했으며 실제 브라우저 세션 로그인 흐름, 키 교체, 브라우저 충돌 처리는 미검증입니다. 키·저장소 로직에는 단위 테스트가 있고 오래된 저장 거부는 하네스 API로 확인했습니다.
 
 ## 정책 순서와 자동 업그레이드
 
@@ -115,11 +113,11 @@ UI는 관리 센터의 기존 `cli-proxy-auth` 또는 구형 `managementKey` 저
 
 자동 별칭은 계열 템플릿과 **모델 이름 전체**를 비교합니다. `gpt-{version}-sol`은 `gpt-6.1-sol`과 일치하지만 `gpt-6.1-sol-mini`와는 일치하지 않습니다. 버전을 숫자 구성 요소로 비교한 뒤(`6.10 > 6.9`, `4-5 == 4.5`) 비교 가능한 날짜를 비교합니다. `{date}`는 전체 날짜와 모호하지 않은 짧은 날짜를 지원하며, 불확실한 연도·세기를 임의로 추측하지 않습니다. 같은 버전의 날짜 있음/없음, 서로 다른 날짜 정밀도, 최상위 동률, 비교 불가능한 시험 버전은 모호할 수 있습니다. 이때 **현재 대상을 유지**하고 이유를 기록합니다. 같거나 낮은 버전으로 변경하지 않으며 현재 대상을 해석할 수 없으면 `current_unparseable`로 유지합니다. 시험 버전(`preview`, `beta`, `alpha`, `exp`, `experimental`, `rc`, `nightly`, `dev`, `test`)은 기본 제외됩니다. 계열 허용 규칙도 시험 버전을 제외합니다.
 
-기본 계열은 Sol, Astra, Luna, Claude Opus/Sonnet/Haiku/Fable, Gemini Pro/Flash입니다. 사용자 계열은 `{version}` 하나와 선택적인 `{date}` 하나를 사용합니다. 활성 런타임 자격 증명이 제공하는 후보만 자동 선택합니다. 없거나 비활성·사용 불가인 자격 증명, 목록에만 있는 모델은 라우팅 가능한 것으로 취급하지 않습니다. 새로고침 실패 시 마지막 정상 정보와 대상을 유지합니다. 이 목록은 스케줄러의 현재 선택 가능성이나 모델별 쿨다운을 원자적으로 보증하지 못하며 정적 executor 전용 등록은 포함하지 않습니다. 상태 확인은 **기본 꺼짐**이며 켜면 변경 전 CPA를 통한 최소 유료 요청이 발생할 수 있습니다. dry run은 유료 상태 확인을 실행하지 않습니다. 근거: [버전 파서](internal/version/version.go), [자동 평가](internal/autoupdate/evaluate.go), [목록](internal/catalog/catalog.go), [상태 확인 요청](app.go).
+기본 계열은 Sol, Astra, Luna, Claude Opus/Sonnet/Haiku/Fable, Gemini Pro/Flash입니다. 사용자 계열은 `{version}` 하나와 선택적인 `{date}` 하나를 사용합니다. 활성 런타임 자격 증명이 제공하는 후보를 선택합니다. 계약 §4의 예외로, CPA 설정에서 합성된 OpenAI 호환 클라이언트는 런타임 목록에서 생략되므로 호스트의 해당 클라이언트 모델 등록을 캐시된 라우팅 근거로 사용합니다. 명시적인 비활성·사용 불가 근거가 우선합니다. 그 외의 누락 자격 증명과 목록에만 있는 모델은 라우팅 근거가 아닙니다. 새로고침 실패 시 마지막 정상 정보와 대상을 유지합니다. 이 목록은 스케줄러의 현재 선택 가능성이나 모델별 쿨다운을 원자적으로 보증하지 못하며 정적 executor 전용 등록은 포함하지 않습니다. 상태 확인은 **기본 꺼짐**이며 켜면 변경 전 CPA를 통한 최소 유료 요청이 발생할 수 있습니다. dry run은 유료 상태 확인을 실행하지 않습니다. 근거: [버전 파서](internal/version/version.go), [자동 평가](internal/autoupdate/evaluate.go), [목록](internal/catalog/catalog.go), [상태 확인 요청](app.go).
 
 ## UI와 curl로 따라 하는 네 가지 예제
 
-테스트 인스턴스에서 실행하거나 기존 정책 교체 전에 내용을 검토하세요. 각 예제는 부분 수정이 아닌 **전체 상태 교체**이며 관련 없는 별칭·규칙을 제거합니다. 별칭을 저장하려면 대상이 실제 호스트 목록에 있어야 하며, 알려져 있지만 잠시 라우팅 불가능한 대상은 가능합니다. 설명용 `gpt-6.1-sol`, `gpt-6-astra`, `claude-opus-4-5`를 필요한 테스트 제공자 설정에 등록하세요. [예제 안내](examples/README.md)를 참고하세요.
+테스트 인스턴스에서 실행하거나 기존 정책 교체 전에 내용을 검토하세요. 각 예제는 부분 수정이 아닌 **전체 상태 교체**이며 관련 없는 별칭·규칙을 제거합니다. 알 수 없거나 라우팅 불가능한 대상도 저장해 오프라인 별칭을 수정할 수 있습니다. 해당 별칭 추론은 fallback 없이 503으로 실패합니다. 설명용 `gpt-6.1-sol`, `gpt-6-astra`, `claude-opus-4-5`를 필요한 테스트 제공자 설정에 등록하세요. [예제 안내](examples/README.md)를 참고하세요.
 
 ### 공통 curl 함수
 
@@ -173,7 +171,7 @@ curl --fail-with-body -sS "$CPA_ORIGIN/v1/chat/completions" \
 
 마지막 명령은 실제 추론이므로 제공자 요금이 발생할 수 있습니다. 라우팅 가능한 업스트림이 필요하며 예제 저장만으로 이를 확인할 수 없습니다.
 
-<!-- E2E:pinned-sol 업스트림 호출 근거와 함께 gpt-6.1-sol 별칭 라우팅 확인 필요. -->
+실제 CPA + 가짜 업스트림 근거: 기록에서 JSON/SSE의 `gpt-sol`이 `gpt-6.1-sol`로 도달함을 확인했고 전역 응답 치환 off/on과 별칭별 override를 확인했습니다.
 
 ### 2. Sol 계열 안에서 자동 업그레이드
 
@@ -194,7 +192,7 @@ jq -n --argjson revision "$revision" '{revision:$revision,dry_run:false}' |
 
 라우팅 후보 없음, 모호한 순서, 상태 확인 실패, 현재 대상 해석 실패 시 `kept`가 올바른 결과일 수 있습니다. 임의의 대체 모델을 선택하면 안 됩니다.
 
-<!-- E2E:auto-sol 라우팅 가능한 호스트 데이터로 숫자 버전 업그레이드, 시험 버전 제외, 모호성 유지, 다운그레이드 방지 확인 필요. -->
+실제 CPA + 가짜 업스트림 근거: `6.9`보다 `6.10`을 선택하고 mini/preview를 제외했으며 JSON/SSE가 `6.10`으로 도달했습니다. 날짜 순서, 모호한 후보 유지, 다운그레이드 방지의 경계 사례는 단위 테스트만의 근거이며 이 실제 CPA 실행에서는 확인하지 않았습니다.
 
 ### 3. Sol·Astra·Claude Opus 계열만 허용
 
@@ -210,7 +208,7 @@ curl --fail-with-body -sS "$CPA_ORIGIN/v1/models" \
   -H "Authorization: Bearer $CPA_API_KEY"
 ```
 
-<!-- E2E:family-whitelist Sol/Astra/Opus 목록 및 직접 요청 집행 확인 필요. explain만으로 추론 집행을 입증할 수 없음. -->
+이 세 계열 정책에 쓰이는 판정 규칙의 근거는 단위 테스트뿐입니다: 전체 이름 매칭, 시험 버전 제외, 숨김·허용 목록 판정. 실제 CPA 실행은 별칭 전용 목록과 직접·접두사·네이티브·thinking·Claude·Gemini 거부를 확인했지만 이 Sol/Astra/Opus 정책의 각 계열 추론 성공을 확인한 것은 아닙니다.
 
 ### 4. 원본은 숨기고 별칭만 공개
 
@@ -228,7 +226,7 @@ curl -sS -i "$CPA_ORIGIN/v1/chat/completions" \
   -d '{"model":"gpt-6.1-sol","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
-<!-- E2E:aliases-only 별칭만 있는 목록, 별칭 추론 성공, 숨긴 원본의 업스트림 호출 없음, JSON/SSE 응답 이름 치환 확인 필요. -->
+실제 CPA + 가짜 업스트림 근거: `/v1/models`는 정확히 `[gpt-sol]`이었고 별칭 JSON/SSE가 성공했습니다. 숨긴 원본·thinking 요청은 404, 접두사·네이티브·무관한 이름은 403이며 모두 업스트림 호출이 0회였습니다. 응답 치환 off/on과 별칭 override도 확인했습니다.
 
 ## 상태와 관리 API
 
@@ -239,12 +237,12 @@ curl -sS -i "$CPA_ORIGIN/v1/chat/completions" \
 | `settings.whitelist_enabled` | 불리언, 초기 false. |
 | `settings.rewrite_response_model` | 불리언, 초기 false. 별칭별로 재정의 가능. |
 | `settings.refresh_interval_seconds` | 0이면 호스트 설정, 그 외 정수 ≥30. 초기 300. |
-| `families[]` | `id`, `name`, `template`, 선택 `provider`, 명시적 `allow_dated`. 기본 계열은 읽기 전용. |
+| `families[]` | `id`, `name`, `template`, 선택 `provider`, `allow_dated` 생략 시 true. 기본 계열은 읽기 전용. |
 | `aliases[]` | `id`, `name`, `enabled`, `mode` (`pinned`/`auto`), 필수 `target`, `provider`, `expose_original`, nullable `rewrite_response_model`, `auto`. |
 | `aliases[].auto` | `family`, `include_prerelease`, `health_check`. 불리언 기본 false. |
 | `rules[]` | `id`, `enabled`, `kind` (`exact`/`family`/`pattern`/`alias`), `value`, 선택 `note`. 패턴은 정규식이 아닌 `*`, `?` 지원. |
 
-**불리언은 명시적으로 보내세요.** Go 전체 상태 디코더는 생략된 불리언을 zero value로 처리합니다. mock의 기본값처럼 `enabled:true`나 사용자 계열의 `allow_dated:true`를 추론하지 않습니다. provider 생략은 빈 값이며 별칭 rewrite 생략/null은 전역 기본값을 상속합니다. 전체 교체에는 네 최상위 정책 필드가 모두 필요합니다. 새 별칭의 `id`는 생략해 서버가 생성하게 하고, 수정 시 반환받은 ID를 유지합니다. 사용자 계열·규칙 ID는 같은 요청의 참조를 위해 지정할 수 있으며 모든 ID는 고유해야 합니다. 별칭은 대소문자 무시 기준으로 실제 모델·다른 별칭과 충돌할 수 없고 대상은 다른 별칭이 아닌 알려진 실제 모델 ID여야 합니다. 근거: [타입](internal/policy/types.go), [입력 처리](internal/mgmt/input.go), [검증](internal/policy/validate.go), [예제](examples/README.md).
+**전체 settings의 두 불리언과 정수 갱신 주기는 필수입니다.** 별칭·규칙의 `enabled`와 사용자 계열의 `allow_dated`는 생략 시 true, `expose_original`과 auto 플래그는 false입니다. 예제는 의도를 분명히 하도록 값을 명시합니다. provider 생략은 빈 값이며 별칭 rewrite 생략/null은 전역 기본값을 상속합니다. 전체 교체에는 네 최상위 정책 필드가 모두 필요합니다. 새 별칭의 `id`는 생략해 서버가 생성하게 하거나 고유하고 안정적인 ID를 지정할 수 있습니다. 수정 시 ID를 유지합니다. 사용자 계열·규칙 ID는 같은 요청의 참조를 위해 지정할 수 있으며 모든 ID는 고유해야 합니다. 별칭은 대소문자 무시 기준으로 실제 모델·다른 별칭과 충돌할 수 없고 대상은 다른 Dock 별칭이 아닌 업스트림 모델을 가리킵니다. 알 수 없거나 라우팅 불가능한 대상도 저장할 수 있으며 추론은 503으로 실패합니다. 근거: [타입](internal/policy/types.go), [입력 처리](internal/mgmt/input.go), [검증](internal/policy/validate.go), [예제](examples/README.md).
 
 아래는 `/v0/management/plugins/cpa-model-dock` 기준 상대 경로입니다. 모두 관리 키가 필요합니다.
 
@@ -253,33 +251,129 @@ curl -sS -i "$CPA_ORIGIN/v1/chat/completions" \
 | `GET /overview`, `GET /state`, `GET /catalog` | 저장 정책, 현재 리비전, 상태와 모델 목록. |
 | `PUT /state` | 전체 정책 검증·교체. 리비전 필요. |
 | `POST /validate` | 저장 없는 전체 초안 검증·미리보기. **PUT은 미지원.** |
-| `POST /catalog/refresh` | 목록 새로고침·자동 별칭 평가. 리비전 필요. |
+| `POST /catalog/refresh` | 목록만 새로고침. 리비전 불필요, 정책·이력·별칭 런타임 상태 변경 없음. |
 | `POST /aliases/check` | `dry_run:true`면 미리보기, 아니면 리비전을 사용해 적용. 선택 `alias_id`. |
 | `POST /rules/preview` | 초안의 규칙과 공개 이름 미리보기. |
 | `POST /explain` | `{model,draft?}` 정책 설명. 추론 없음. |
 | `GET /history?limit=100&before=...` | 최신순 이력. `before`는 해당 항목을 제외하는 이력 ID 커서. |
-| `POST /history/restore` | `{entry_id,revision,scope:"state"|"alias_target"}`. 선택 항목의 **after** 재적용. |
+| `POST /history/restore` | `{entry_id,revision,scope:"state"|"alias_target"}`. 선택 항목의 **before**로 되돌리며 새 리비전 생성. |
 
-변경 요청은 현재 body `revision` 또는 따옴표가 있는 `If-Match: "<n>"`를 사용합니다. 둘 다 보내면 일치해야 합니다. 읽기 전용 preview/validate/explain과 dry-run check는 리비전이 필요 없습니다. 잘못된 저장은 422이며 아무것도 변경하지 않습니다. `/validate`의 정책 검증 결과는 HTTP 200과 `valid:true` 또는 `valid:false`로 반환합니다. 오래된 리비전은 409입니다. 새로고침·변경 없는 확인을 포함해 리비전 증가를 예측하지 말고 변경 후 GET state로 다시 읽으세요. 백엔드/UI 통합 과정에서 런타임 상태·미리보기 응답 형태가 바뀔 수 있습니다. 개발 mock보다 구현 계약과 현재 백엔드를 우선합니다. 근거: [라우트](internal/mgmt/handler.go), [응답 뷰](internal/mgmt/views.go), [애플리케이션](app.go).
+변경 요청은 현재 body `revision` 또는 따옴표가 있는 `If-Match: "<n>"`를 사용합니다. 둘 다 보내면 일치해야 합니다. 읽기 전용 preview/validate/explain과 dry-run check는 리비전이 필요 없습니다. 잘못된 저장은 422이며 아무것도 변경하지 않습니다. `/validate`의 정책 검증 결과는 HTTP 200과 `valid:true` 또는 `valid:false`로 반환합니다. 오래된 리비전은 409입니다. 새로고침·변경 없는 확인은 정책 리비전을 올리지 않습니다. 변경 후 GET state로 다시 읽으세요. 백엔드/UI 통합 과정에서 런타임 상태·미리보기 응답 형태가 바뀔 수 있습니다. 개발 mock보다 구현 계약과 현재 백엔드를 우선합니다. 근거: [라우트](internal/mgmt/handler.go), [응답 뷰](internal/mgmt/views.go), [애플리케이션](app.go).
 
-이력 복원은 **“이 변경 취소”가 아닙니다**. 선택한 항목의 `after` 정책을 새 리비전으로 다시 적용합니다. `alias_target` 범위는 아직 존재하는 별칭의 변경된 대상만 재적용합니다. 더 이전 상태로 돌아가려면 원하는 정책이 **After**에 있는 항목을 선택하세요. “Before”라고 설명하는 이전 mock 문서와 UI 도움말은 오래된 내용입니다. diff를 확인하고 백엔드 동작을 기준으로 판단하세요. 저장은 원자적 쓰기, 마지막 정상 사본 `state.json.bak`, 최대 1000개 `history.jsonl`을 사용합니다. 로드는 원본 → 백업 순서이며 둘 다 없을 때만 기본값을 씁니다. 기존 파일이 손상되고 유효한 백업도 없으면 `policy_unavailable`입니다. 상태 디렉터리당 writer 하나만 사용하세요. 프로세스 간 잠금은 없습니다. [저장소](internal/store/store.go), [운영 안내](docs/operations.md)를 참고하세요.
+이력 복원은 선택 항목의 `before` 값으로 되돌리고 새 리비전을 만듭니다. state 범위는 전체 정책을, `alias_target` 범위는 현재 정책에서 해당 별칭의 대상만 복원합니다. 별칭이 없으면 검증에 실패합니다. 리비전을 낮추거나 이력을 삭제하지 않습니다. 저장은 원자적 쓰기, 마지막 정상 사본 `state.json.bak`, 최대 1000개 `history.jsonl`을 사용합니다. 로드는 원본 → 백업 순서이며 둘 다 없을 때만 기본값을 씁니다. 기존 파일이 손상되고 유효한 백업도 없으면 `policy_unavailable`입니다. 상태 디렉터리당 writer 하나만 사용하세요. 프로세스 간 잠금은 없습니다. [저장소](internal/store/store.go), [운영 안내](docs/operations.md)를 참고하세요.
 
-## 집행 한계와 개인정보
+## 알려진 한계, 집행 경계와 개인정보
 
 **모든 경로에 대한 보안 보장은 아닙니다.** 유일한 최고 플러그인 우선순위, 신뢰하는 네이티브 코드, 미지원 경로에 대한 필수 프록시 제한을 함께 사용하세요. 클라이언트가 프록시를 우회하지 못하도록 CPA 직접 접근을 제한하세요. [운영 안내](docs/operations.md)에 nginx/Caddy 설정 예제가 있습니다.
 
 | 경계 | v8.0.44의 실제 동작 |
 | --- | --- |
-| Realtime/live | 모델 훅이 없습니다. 비독점 guard가 호출되면 whitelist 사용 시 거부할 수 있지만 기본 시작 순서는 config-access가 먼저이며 첫 인증 성공 시 종료합니다. 유효한 기본 클라이언트 키는 guard를 우회할 수 있고 realtime client secret도 fallback provider를 우회합니다. `/v1/realtime*`, `/v1/live*`를 외부에서 차단하세요. |
-| Responses WebSocket | 진행 중 continuation 프레임은 ModelRouter/BeforeAuth/AfterAuth를 재실행하지 않습니다. create/append의 명시적 모델 변경은 조용히 허용하지 않고 replay를 요구합니다. steer는 바인딩된 모델로 인증하지만 제어 필드는 finalizer·업스트림 검증으로 넘깁니다. 엄격한 배포는 GET `/v1/responses`, GET `/backend-api/codex/responses`를 차단하세요. |
-| Gemini 모델 상세 | GET `/v1beta/models/{id}`는 필터링된 모델 목록 훅을 거치지 않습니다. 상세 GET을 별도로 제한하세요. POST 추론은 다른 메서드 경로입니다. |
-| 관리 원시 요청 | POST `/v0/management/api-call`, POST `/v8/management/requests/api-call`은 모델 정책 파이프라인을 사용하지 않습니다. 이 권한 높은 전송 경로를 제한하세요. |
+| Realtime/live | 모델 훅이 없습니다. 비독점 guard가 호출되면 whitelist 사용 시 거부할 수 있지만 기본 시작 순서는 config-access가 먼저이며 첫 인증 성공 시 종료합니다. 실제 CPA에서 유효한 기본 클라이언트 키로 검사한 결과 guard 거부가 없었습니다(off/on 모두 네이티브 503 `auth_not_found`). 이 키에 대해 guard는 보호가 아닙니다. realtime client secret도 fallback provider를 우회합니다. `/v1/realtime*`, `/v1/live*`를 외부에서 차단하세요. |
+| Responses WebSocket | 소스 확인만의 근거: 진행 중 continuation 프레임은 ModelRouter/BeforeAuth/AfterAuth를 재실행하지 않습니다. create/append의 명시적 모델 변경은 조용히 허용하지 않고 replay를 요구합니다. steer는 바인딩된 모델로 인증하지만 제어 필드는 finalizer·업스트림 검증으로 넘깁니다. 업그레이드 후 프레임은 URL 경로로 필터링할 수 없습니다. 엄격한 배포는 GET `/v1/responses`, GET `/backend-api/codex/responses`를 차단하세요. |
+| Gemini 모델 상세 | 실제 CPA의 GET `/v1beta/models/{id}`가 숨긴 모델 메타데이터와 HTTP 200을 반환했습니다. 필터링된 모델 목록 훅을 거치지 않습니다. 상세 GET을 별도로 제한하세요. POST 추론은 다른 메서드 경로입니다. |
+| 관리 원시 요청 | 소스 확인만의 근거: POST `/v0/management/api-call`, POST `/v8/management/requests/api-call`은 모델 정책 파이프라인을 사용하지 않습니다. 비관리자 네트워크에서 이 권한 높은 전송 경로를 거부하세요. 관리자도 CPA 관리 인증이 필요합니다. |
 | 비디오 콘텐츠 | GET `/openai/v1/videos/{video_id}/content`의 메타데이터·상태 조회는 훅을 거치지만 이후 바이너리 다운로드·복사는 모델 응답·스트림 훅 외부의 HTTP 클라이언트를 사용합니다. |
 | 최종 payload 규칙 | 제공자 정규화와 설정된 기본값·덮어쓰기·필터가 **AfterAuth 이후** 실행될 수 있습니다. 모든 최종 업스트림 바이트를 플러그인이 승인하지는 않습니다. |
 | 다른 플러그인·로드 상태 | 더 높은 우선순위 router/interceptor, 네이티브 executor, 비활성·미로드·언로드·퓨즈 차단, 호스트 변경은 신뢰 경계입니다. 우선순위만으로 집행을 보장하지 못합니다. |
 | 진행 중 요청 | 정책·목록 스냅샷을 고정하므로 나중의 정책 철회가 이미 허용된 요청을 소급 취소하지 않습니다. 완료 또는 10분 비활동 후 pin이 만료됩니다. |
 
-Codex Alpha Search는 일반 요청 훅 대신 ModelRouter를 사용합니다. 거부할 요청에는 플러그인의 등록된 정적 거부 executor를 선택하고, CPA가 이 비제공자 Alpha 경로를 503으로 거부합니다. 허용 별칭은 호환되고 라우팅 가능한 Codex 대상이 필요합니다. 존재하지 않는 제공자 이름을 거부용으로 사용하면 CPA가 그 경로를 무시할 수 있습니다. 엄격한 배포에서는 운영 안내처럼 Alpha Search 두 경로도 차단할 수 있습니다.
+Codex Alpha Search는 **guard가 켜져 있고 허용 목록 규칙 또는 별칭 대상 숨김이 최종 모델 승인을 요구하면 사실상 비활성화됩니다**. CPA가 공개 ID의 자격 증명 매핑 출처를 노출하지 않아 정확히 허용한 raw·접두사·CPA 네이티브 이름도 검증할 수 없습니다. OAuth는 원래 body 모델을 전송하고 API 키 매핑은 AfterAuth 없이 선택 후 해석되므로 **Dock 별칭은 guard가 꺼져도 Alpha에서 항상 거부됩니다**. Alpha 두 경로에서 공개 Dock 별칭과 native/prefix/raw exact 허용을 포함해 정적 거부 executor의 HTTP 503, 업스트림 호출 0회를 확인했습니다. 제한 없는 기본 정책은 네이티브 Alpha를 통과시킵니다. guard를 끄면 보수적인 목적지 차단은 없어지지만 Dock 별칭을 안전하게 사용할 수 있게 되지는 않습니다. 기준 테스트는 Codex 자격 증명이 없어 호스트 `auth_not_found`까지만 도달했습니다. 실제 Codex OAuth 전달은 소스 확인만 했고 실제 제공자 자격 증명으로 실행하지 않았습니다. [계약 §6](docs/design/contract.md#6-guard--uncovered-endpoints)을 참고하세요.
+
+아래는 전용 게이트웨이의 구체적인 설정 예제입니다. **프록시 실행·구문 검사는 미검증**이며 실제 환경에서 확인해야 합니다. `10.20.30.0/24`를 관리자 네트워크로 바꾸고 CPA 직접 접근을 막으세요. 관리자도 CPA 관리 키가 필요합니다. Caddy `remote_ip`와 nginx 주소 제한은 연결 peer 기준이므로 앞선 프록시가 있다면 신뢰 경계를 별도로 검토하세요.
+
+nginx는 exact `=`를 우선하고, 그 외에는 가장 긴 접두사를 기억한 뒤 파일 순서의 첫 일치 정규식을 사용합니다. 가장 긴 `^~` 접두사는 **위치와 관계없이** 정규식 검사를 생략하므로 우회 exact/`^~`나 앞선 광범위 정규식을 추가하지 마세요. Gemini 정규식은 상세 접두사 전체에 일치하지만 `if`는 GET만 거부합니다. POST는 같은 location의 `proxy_pass`로 전달돼 `:generateContent`·`:streamGenerateContent`가 유지되고 정확한 GET `/v1beta/models`는 일반 프록시를 사용합니다. Caddy는 `route` 순서와 GET+경로 matcher로 같은 제어를 합니다. [공식 문서 근거와 배포 점검](docs/operations.md#nginx)을 참고하세요.
+
+<details>
+<summary>nginx / Caddy 예제 보기</summary>
+
+```nginx
+server {
+    listen 127.0.0.1:8080;
+    server_name localhost;
+
+    location ~ ^/v1/(realtime|live) {
+        return 403;
+    }
+    location = /v0/management/api-call {
+        allow 10.20.30.0/24;
+        deny all;
+        proxy_pass http://127.0.0.1:8317;
+        proxy_http_version 1.1;
+    }
+    location = /v8/management/requests/api-call {
+        allow 10.20.30.0/24;
+        deny all;
+        proxy_pass http://127.0.0.1:8317;
+        proxy_http_version 1.1;
+    }
+    # Optional strict Alpha Search restrictions.
+    location = /v1/alpha/search {
+        return 403;
+    }
+    location = /backend-api/codex/alpha/search {
+        return 403;
+    }
+    location ~ ^/(v1|backend-api/codex)/responses/?$ {
+        if ($request_method = GET) { return 403; }
+        proxy_pass http://127.0.0.1:8317;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+    }
+    location ~ ^/v1beta/models/ {
+        if ($request_method = GET) { return 403; }
+        proxy_pass http://127.0.0.1:8317;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+    }
+    location ~ ^/openai/v1/videos/[^/]+/content/?$ {
+        if ($request_method = GET) { return 403; }
+        proxy_pass http://127.0.0.1:8317;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+    }
+    location / {
+        proxy_pass http://127.0.0.1:8317;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+    }
+}
+```
+
+```caddyfile
+http://127.0.0.1:8080 {
+    @live path /v1/realtime* /v1/live*
+    @rawManagementNonAdmin {
+        path /v0/management/api-call /v8/management/requests/api-call
+        not remote_ip 10.20.30.0/24
+    }
+    @alpha path /v1/alpha/search /backend-api/codex/alpha/search
+    @responsesWS {
+        method GET
+        path /v1/responses /v1/responses/ /backend-api/codex/responses /backend-api/codex/responses/
+    }
+    @geminiDetail {
+        method GET
+        path /v1beta/models/*
+    }
+    @videoContent {
+        method GET
+        path_regexp video ^/openai/v1/videos/[^/]+/content/?$
+    }
+    route {
+        respond @live 403
+        respond @rawManagementNonAdmin 403
+        respond @alpha 403
+        respond @responsesWS 403
+        respond @geminiDetail 403
+        respond @videoContent 403
+        reverse_proxy 127.0.0.1:8317 {
+            flush_interval -1
+        }
+    }
+}
+```
+
+</details>
 
 요청 훅은 성공 응답 안의 `Terminate`로 거부합니다. 일반 훅 오류를 반환하면 CPA가 계속 진행할 수 있기 때문입니다. 응답·스트림 DTO는 HTTP 상태 변경이나 열린 소켓 종료를 할 수 없으므로 복구 시 본문 정리·청크 삭제는 가능해도 전송 단계에서 소급 거부할 수는 없습니다.
 
@@ -327,12 +421,12 @@ CPA_MODEL_DOCK_LIB="$PWD/dist/cpa-model-dock.dylib" ./e2e/run.sh
 | --- | --- |
 | 플러그인·메뉴 없음 | 두 활성화 스위치, 파일명·디렉터리, OS/CPU, glibc/C 런타임, 로더 오류, 로드 버전, 우선순위. 정적 HTML만으로 정상 상태를 판단하지 마세요. |
 | 관리 401/403 | 관리 키와 호스트 관리 접근 설정을 확인합니다. 추론 키로는 부족하며 만료된 탭 키는 교체합니다. |
-| 저장 422 / 검증 `valid:false` | POST validate, 전체 필드, 명시적 불리언, 알려진 대상, 이름·ID 중복 여부, 새 별칭 ID 생략을 확인하고 오류 상세를 읽습니다. |
+| 저장 422 / 검증 `valid:false` | POST validate, 전체 필드, 필수 settings, 대상 형식, 이름·ID 중복 여부를 확인하고 오류 상세를 읽습니다. |
 | 저장 409 | 현재 리비전을 읽고 초안을 조정합니다. 자동 업데이트가 먼저 저장했을 수 있습니다. |
 | 빈 목록·별칭 503 | 허용 규칙, 별칭 게시, 대상 상태, 제공자 고정, 자격 증명 수를 확인합니다. 등록과 라우팅 가능은 다릅니다. |
 | 접두사·네이티브 별칭 거부 | 기본 호스트는 신뢰할 접두사·매핑 출처를 제공하지 않습니다. 해석된 대상과 AfterAuth 정책을 확인합니다. |
 | 자동 대상 유지 | 전체 계열 일치, 라우팅 가능 여부, 버전·날짜 모호성, 시험 버전 설정, 새로고침, 상태 확인 결과를 확인합니다. |
-| UI 설명과 다른 복원 | 백엔드는 선택 항목의 **After**를 재적용합니다. “Before” 도움말은 오래된 내용입니다. |
+| UI 설명과 다른 복원 | 복원은 선택 항목의 **Before** 값으로 되돌리며 새 리비전을 만듭니다. |
 | 상태 손상·쓰기 불가 | 서비스 사용자 권한을 확인하고 백업을 보존한 뒤 API로 복구합니다. 전체 거부를 없애려고 상태를 삭제하지 마세요. |
 | Realtime/WS/상세 필터 미적용 | 프록시 제한을 적용·검증하세요. 문서화된 호스트 한계입니다. |
 

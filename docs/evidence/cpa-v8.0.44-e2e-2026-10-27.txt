@@ -1,0 +1,92 @@
+RUN  start CPA + fake upstream
+PASS start CPA + fake upstream (686ms): isolated loopback listeners; embedded CPA catalogs; management authenticated
+RUN  client and management auth isolation
+PASS client and management auth isolation (123ms): missing client key and client key on management rejected
+RUN  fake upstream model catalog
+PASS fake upstream model catalog (1ms): all 8 fake models, credential prefix and CPA model alias advertised
+RUN  baseline route gpt-6.1-sol
+PASS baseline route gpt-6.1-sol (4ms): recorder confirms upstream model=gpt-6.1-sol
+RUN  baseline route prefix/gpt-6.1-sol
+PASS baseline route prefix/gpt-6.1-sol (1ms): recorder confirms upstream model=gpt-6.1-sol
+RUN  baseline route cpa-native-sol
+PASS baseline route cpa-native-sol (1ms): recorder confirms upstream model=gpt-6.1-sol
+RUN  baseline route gpt-6.1-sol(high)
+PASS baseline route gpt-6.1-sol(high) (1ms): recorder confirms upstream model=gpt-6.1-sol
+RUN  baseline route other-model-x
+PASS baseline route other-model-x (1ms): recorder confirms upstream model=other-model-x
+RUN  baseline SSE chat
+PASS baseline SSE chat (4ms): two JSON chunks, model fields, fake text and [DONE] verified
+RUN  baseline Responses translation
+PASS baseline Responses translation (3ms): CPA /v1/responses reaches fake /v1/chat/completions
+RUN  baseline protocol /v1/messages
+PASS baseline protocol /v1/messages (2ms): translated protocol reaches OpenAI-compatible upstream
+RUN  baseline protocol /gemini
+PASS baseline protocol /gemini (1ms): translated protocol reaches OpenAI-compatible upstream
+RUN  Alpha default pass-through
+PASS Alpha default pass-through (1ms): host auth_not_found with no Codex credential; no plugin denial route
+RUN  plugin registration and resources
+PASS plugin registration and resources (242ms): registered/effective, Model Dock menu, public HTML, authenticated state
+RUN  pinned alias and response model rewrite
+PASS pinned alias and response model rewrite (1.079s): pinned JSON/SSE route target and rewrite off/on; alias override checked
+RUN  alias-only whitelist listing
+PASS alias-only whitelist listing (216ms): /v1/models exactly [gpt-sol]; alias JSON/SSE still route
+RUN  blocked direct/prefix/native/thinking/other models
+PASS blocked direct/prefix/native/thinking/other models (4ms): gpt-6.1-sol HTTP 404; zero upstream calls; prefix/gpt-6.1-sol HTTP 403; zero upstream calls; cpa-native-sol HTTP 403; zero upstream calls; gpt-6.1-sol(high) HTTP 404; zero upstream calls; other-model-x HTTP 403; zero upstream calls
+RUN  blocked Claude notation
+PASS blocked Claude notation (2ms): gpt-6.1-sol HTTP 404; zero upstream calls; claude-fable-5-dd-los-1.6-tpg HTTP 404; zero upstream calls
+RUN  blocked Gemini notation
+PASS blocked Gemini notation (1ms): gpt-6.1-sol HTTP 404; zero upstream calls
+RUN  Alpha Search denial
+PASS Alpha Search denial (2ms): /v1/alpha/search HTTP 503 denial executor; /backend-api/codex/alpha/search HTTP 503 denial executor; zero upstream calls
+RUN  frontend-auth realtime/live guard observation
+PASS frontend-auth realtime/live guard observation (2ms): OBSERVATION: GET /v1/realtime guard_denied=false off=503 on=503 body={"error":{"code":"realtime_request_failed","message":"auth_not_found: no auth available","param":null,"type":"api_error"}}; POST /v1/realtime guard_denied=false off=503 on=503 body={"error":{"code":"realtime_request_failed","message":"auth_not_found: no auth available","param":null,"type":"api_error"}}; POST /v1/live guard_denied=false off=503 on=503 body={"error":"auth_not_found: no auth available"}
+RUN  Gemini hidden detail observation
+PASS Gemini hidden detail observation (0s): OBSERVATION: hidden_detail_leaks=true HTTP 200 body={"displayName":"gpt-6.1-sol","name":"models/gpt-6.1-sol"} (known host gap; not a policy assertion)
+RUN  auto-update numeric version selection
+PASS auto-update numeric version selection (598ms): 6.10 beats 6.9; mini and preview excluded; JSON/SSE reach 6.10
+RUN  removed target keeps mapping
+PASS removed target keeps mapping (1.8s): removed from fake + both CPA credentials; mapping kept; alias 503 with zero upstream calls; restored
+RUN  stale revision rejected
+PASS stale revision rejected (267ms): stale PUT 409 revision_conflict; previous policy enforced
+RUN  invalid state preserves policy
+PASS invalid state preserves policy (241ms): invalid mode + whitelist disable rejected atomically; revision/state unchanged
+RUN  restart restores state and history
+PASS restart restores state and history (583ms): revision 9 and 9 history IDs restored; whitelist and alias enforce
+RUN  Alpha native mapping and alias safety
+PASS Alpha native mapping and alias safety (480ms): exact native/prefix/raw allows and published Dock alias all denied on both paths; zero upstream calls
+RUN  UI resources and management API
+PASS UI resources and management API (778ms): 4 public assets with strict CSP; authenticated overview/state/catalog/history/validate/preview/explain/refresh/check; revision 11 unchanged
+
+RESULT  SCENARIO                                            DETAIL
+PASS    start CPA + fake upstream                           isolated loopback listeners; embedded CPA catalogs; management authenticated
+PASS    client and management auth isolation                missing client key and client key on management rejected
+PASS    fake upstream model catalog                         all 8 fake models, credential prefix and CPA model alias advertised
+PASS    baseline route gpt-6.1-sol                          recorder confirms upstream model=gpt-6.1-sol
+PASS    baseline route prefix/gpt-6.1-sol                   recorder confirms upstream model=gpt-6.1-sol
+PASS    baseline route cpa-native-sol                       recorder confirms upstream model=gpt-6.1-sol
+PASS    baseline route gpt-6.1-sol(high)                    recorder confirms upstream model=gpt-6.1-sol
+PASS    baseline route other-model-x                        recorder confirms upstream model=other-model-x
+PASS    baseline SSE chat                                   two JSON chunks, model fields, fake text and [DONE] verified
+PASS    baseline Responses translation                      CPA /v1/responses reaches fake /v1/chat/completions
+PASS    baseline protocol /v1/messages                      translated protocol reaches OpenAI-compatible upstream
+PASS    baseline protocol /gemini                           translated protocol reaches OpenAI-compatible upstream
+PASS    Alpha default pass-through                          host auth_not_found with no Codex credential; no plugin denial route
+PASS    plugin registration and resources                   registered/effective, Model Dock menu, public HTML, authenticated state
+PASS    pinned alias and response model rewrite             pinned JSON/SSE route target and rewrite off/on; alias override checked
+PASS    alias-only whitelist listing                        /v1/models exactly [gpt-sol]; alias JSON/SSE still route
+PASS    blocked direct/prefix/native/thinking/other models  gpt-6.1-sol HTTP 404; zero upstream calls; prefix/gpt-6.1-sol HTTP 403; zero upstream calls; cpa-native-sol HTTP 403; zero upstream calls; gpt-6.1-sol(high) HTTP 404; zero upstream calls; other-model-x HTTP 403; zero upstream calls
+PASS    blocked Claude notation                             gpt-6.1-sol HTTP 404; zero upstream calls; claude-fable-5-dd-los-1.6-tpg HTTP 404; zero upstream calls
+PASS    blocked Gemini notation                             gpt-6.1-sol HTTP 404; zero upstream calls
+PASS    Alpha Search denial                                 /v1/alpha/search HTTP 503 denial executor; /backend-api/codex/alpha/search HTTP 503 denial executor; zero upstream calls
+PASS    frontend-auth realtime/live guard observation       OBSERVATION: GET /v1/realtime guard_denied=false off=503 on=503 body={"error":{"code":"realtime_request_failed","message":"auth_not_found: no auth available","param":null,"type":"api_error"}}; POST /v1/realtime guard_denied=false off=503 on=503 body={"error":{"code":"realtime_request_failed","message":"auth_not_found: no auth available","param":null,"type":"api_error"}}; POST /v1/live guard_denied=false off=503 on=503 body={"error":"auth_not_found: no auth available"}
+PASS    Gemini hidden detail observation                    OBSERVATION: hidden_detail_leaks=true HTTP 200 body={"displayName":"gpt-6.1-sol","name":"models/gpt-6.1-sol"} (known host gap; not a policy assertion)
+PASS    auto-update numeric version selection               6.10 beats 6.9; mini and preview excluded; JSON/SSE reach 6.10
+PASS    removed target keeps mapping                        removed from fake + both CPA credentials; mapping kept; alias 503 with zero upstream calls; restored
+PASS    stale revision rejected                             stale PUT 409 revision_conflict; previous policy enforced
+PASS    invalid state preserves policy                      invalid mode + whitelist disable rejected atomically; revision/state unchanged
+PASS    restart restores state and history                  revision 9 and 9 history IDs restored; whitelist and alias enforce
+PASS    Alpha native mapping and alias safety               exact native/prefix/raw allows and published Dock alias all denied on both paths; zero upstream calls
+PASS    UI resources and management API                     4 public assets with strict CSP; authenticated overview/state/catalog/history/validate/preview/explain/refresh/check; revision 11 unchanged
+
+PASS=29 FAIL=0 SKIP=0
+Artifacts retained: /var/folders/3h/24bs7fpd58338bs7dg__b5rh0000gn/T//cpa-model-dock-e2e.86eEp9

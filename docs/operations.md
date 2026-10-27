@@ -25,23 +25,29 @@ These paths were checked against local v8.0.44 source; proxy snippets themselves
 
 ## nginx
 
-**EN:** Example dedicated loopback gateway on port 8080, proxying CPA on 8317. Put these `location` blocks in the same `server`; do not place an overriding `^~` catch-all before the regex controls. A production TLS listener can use the same restrictions. The `if` directives below only return a status.
+**EN:** Dedicated loopback gateway on 8080 → CPA on 8317. Replace `10.20.30.0/24` with the actual admin network; management keys remain required. Put these sibling locations in one `server`. Exact `=` matches win first. Otherwise nginx chooses the longest prefix, then checks regex locations in file order and uses the first match; plain `location /` is the fallback. A longest matching `^~` prefix skips regex checking **regardless of where it appears in the file**. Do not add bypassing exact/`^~` locations or earlier broad regex proxies. The GET-only `if` returns 403 inside the Gemini location; POST stays in that same location and must have its own `proxy_pass` (it does not fall through to `/`). [nginx location rules](https://nginx.org/en/docs/http/ngx_http_core_module.html#location), [address restrictions](https://nginx.org/en/docs/http/ngx_http_access_module.html).
 
-**KO:** 8080 루프백 게이트웨이에서 8317의 CPA로 프록시하는 예제입니다. 같은 `server` 안에 배치하고 정규식 제어를 우선하지 못하게 만드는 `^~` 전체 경로를 추가하지 마세요. 실제 TLS 리스너에도 같은 제한을 적용할 수 있습니다. 아래 `if`는 상태 반환에만 사용합니다.
+**KO:** 8080 루프백 게이트웨이 → 8317 CPA 예제입니다. `10.20.30.0/24`는 실제 관리자 네트워크로 바꾸세요. 관리 키도 여전히 필요합니다. 같은 `server`의 동급 location으로 배치합니다. 정확한 `=` 일치가 먼저 적용됩니다. 그 외에는 가장 긴 접두사를 선택한 후 파일 순서대로 첫 일치 정규식을 사용하며 일반 `location /`는 fallback입니다. 가장 긴 접두사가 `^~`이면 **파일 위치와 관계없이** 정규식 검사를 건너뜁니다. 차단을 우회하는 exact/`^~`나 앞선 광범위 정규식 프록시를 추가하지 마세요. Gemini location의 `if`는 GET만 403으로 반환합니다. POST는 `/`로 이동하지 않고 그 location에 남으므로 자체 `proxy_pass`가 필요합니다. 근거는 위 nginx 공식 문서입니다.
 
 ```nginx
 server {
     listen 127.0.0.1:8080;
     server_name localhost;
 
-    location ~ ^/v1/(realtime|live)(/|$) {
+    location ~ ^/v1/(realtime|live) {
         return 403;
     }
     location = /v0/management/api-call {
-        return 403;
+        allow 10.20.30.0/24;
+        deny all;
+        proxy_pass http://127.0.0.1:8317;
+        proxy_http_version 1.1;
     }
     location = /v8/management/requests/api-call {
-        return 403;
+        allow 10.20.30.0/24;
+        deny all;
+        proxy_pass http://127.0.0.1:8317;
+        proxy_http_version 1.1;
     }
     # Optional strict Alpha Search restrictions.
     location = /v1/alpha/search {
@@ -78,14 +84,17 @@ server {
 
 ## Caddy
 
-**EN:** Equivalent dedicated loopback listener. `route` preserves the explicit order before the final proxy. Adapt the site address to your TLS hostname in production.
+**EN:** Equivalent loopback listener. Replace the admin CIDR as above. `remote_ip` checks the immediate peer; behind another proxy this is insufficient unless that peer is the intended access boundary. Do not treat untrusted forwarded headers as admin identity. `route` preserves order; the named Gemini matcher requires both GET and `/v1beta/models/*`, so POST `:generateContent`/`:streamGenerateContent` and exact GET `/v1beta/models` remain proxied. Adapt the site address to your TLS hostname. [Caddy matchers](https://caddyserver.com/docs/caddyfile/matchers), [route ordering](https://caddyserver.com/docs/caddyfile/directives/route).
 
-**KO:** 같은 목적의 루프백 리스너입니다. `route`는 최종 프록시보다 앞선 명시적 순서를 유지합니다. 실제 배포에서는 사이트 주소를 TLS 호스트명으로 바꾸세요.
+**KO:** 같은 목적의 루프백 리스너입니다. 위처럼 관리자 CIDR을 바꾸세요. `remote_ip`는 직접 연결한 peer를 검사하므로 앞에 다른 프록시가 있으면 해당 peer가 의도한 접근 경계인지 확인해야 합니다. 신뢰하지 않는 전달 헤더를 관리자 식별로 쓰지 마세요. `route`는 순서를 유지합니다. Gemini matcher는 GET과 `/v1beta/models/*`를 모두 요구하므로 POST `:generateContent`/`:streamGenerateContent`와 정확한 GET `/v1beta/models`는 프록시됩니다. 실제 사이트 주소는 TLS 호스트명으로 바꾸세요. 근거는 위 Caddy 공식 문서입니다.
 
 ```caddyfile
 http://127.0.0.1:8080 {
-    @live path /v1/realtime /v1/realtime/* /v1/live /v1/live/*
-    @rawManagement path /v0/management/api-call /v8/management/requests/api-call
+    @live path /v1/realtime* /v1/live*
+    @rawManagementNonAdmin {
+        path /v0/management/api-call /v8/management/requests/api-call
+        not remote_ip 10.20.30.0/24
+    }
     @alpha path /v1/alpha/search /backend-api/codex/alpha/search
     @responsesWS {
         method GET
@@ -101,7 +110,7 @@ http://127.0.0.1:8080 {
     }
     route {
         respond @live 403
-        respond @rawManagement 403
+        respond @rawManagementNonAdmin 403
         respond @alpha 403
         respond @responsesWS 403
         respond @geminiDetail 403
@@ -113,7 +122,7 @@ http://127.0.0.1:8080 {
 }
 ```
 
-<!-- E2E: Validate nginx/Caddy syntax in the deployment versions, then exercise every blocked path/method with valid client and management keys. Confirm POST inference, model lists, plugin management and public assets still work, and direct CPA access is unreachable from clients. -->
+**Verification status / 검증 상태 (2026-10-27):** Source/documentation checked only; neither proxy was run and no installed nginx/Caddy binary was available for syntax checks. Valid-key gateway denials, admin CIDR enforcement, POST/list/resource preservation and direct-CPA isolation are **unverified deployment requirements**, not harness passes. / 소스·공식 문서만 확인했습니다. 프록시 실행과 설치된 바이너리의 구문 검사는 하지 못했습니다. 유효 키 차단, 관리자 CIDR, POST·목록·리소스 유지, CPA 직접 접근 차단은 하네스 통과가 아닌 **미검증 배포 요구 사항**입니다.
 
 **EN:** Validate configuration with your installed `nginx -t` or `caddy validate --config Caddyfile`. Verify blocked paths return the gateway's 403 even with valid credentials. Verify POST Responses remains usable, list routes remain filtered, management-key-only plugin APIs work, and clients cannot reach CPA directly. These blocks do not address malicious native code or post-AfterAuth payload rewrites; audit those separately. A host route change requires reviewing these restrictions again.
 
@@ -131,11 +140,11 @@ http://127.0.0.1:8080 {
 
 Sources / 근거: [store](../internal/store/store.go), [config/application](../app.go), [management input](../internal/mgmt/input.go).
 
-### Reapply a historical policy / 이력 정책 재적용
+### Undo a historical change / 이력 변경 되돌리기
 
-**EN:** History restoration reapplies the selected entry's **After** state as a new revision, not its Before state. Choose the entry whose After value is the policy you want. `scope:"alias_target"` reapplies only targets changed in that entry for aliases that still exist; it does not resurrect removed aliases. Older UI text/mock notes saying “Before” are inconsistent with the binding contract and backend.
+**EN:** History restoration undoes to the selected entry's **Before** value as a new revision. State scope restores the full policy; `scope:"alias_target"` restores that alias's previous target in the current policy and fails validation if the alias no longer exists. Revision never rolls backward and history is retained. This API has unit coverage; the real-CPA harness tested restart persistence rather than this restore operation.
 
-**KO:** 이력 복원은 선택 항목의 Before가 아니라 **After**를 새 리비전으로 다시 적용합니다. 원하는 정책이 After에 있는 항목을 선택하세요. `scope:"alias_target"`은 그 항목에서 대상이 변경됐고 현재도 존재하는 별칭만 재적용하며 삭제된 별칭을 되살리지 않습니다. “Before”라고 하는 이전 UI 문구·mock 설명은 계약·백엔드와 다릅니다.
+**KO:** 이력 복원은 선택 항목의 **Before** 값으로 되돌리며 새 리비전을 만듭니다. state 범위는 전체 정책을, `scope:"alias_target"`은 현재 정책에서 해당 별칭의 이전 대상만 복원하며 별칭이 없으면 검증에 실패합니다. 리비전을 낮추거나 이력을 지우지 않습니다. 이 API는 단위 테스트 근거이며 실제 CPA 하네스는 이 복원 작업이 아닌 재시작 영속화를 확인했습니다.
 
 ```sh
 # CPA_ORIGIN and CPA_MANAGEMENT_KEY are set privately by the operator.
@@ -153,9 +162,9 @@ jq -n --arg entry_id "$entry_id" --argjson revision "$revision" \
     -H 'Content-Type: application/json' --data-binary @-
 ```
 
-**EN:** Restoration validates the proposed policy before saving. A 409 requires reviewing the newer state; a 422 requires repairing the policy (for example a target no longer known to the catalog). For an external saved policy file, use the README's POST-validate → GET-revision → PUT-state helper and include only the intended full policy. Neither restoring history nor saving JSON proves upstream routability.
+**EN:** Restoration validates the proposed policy before saving. A 409 requires reviewing the newer state; a 422 requires repairing the policy (for example a historical alias that no longer exists). For an external saved policy file, use the README's POST-validate → GET-revision → PUT-state helper and include only the intended full policy. Neither restoring history nor saving JSON proves upstream routability.
 
-**KO:** 복원도 저장 전에 정책을 검증합니다. 409이면 최신 상태를 검토하고, 422이면 목록에서 사라진 대상 등 정책 문제를 고쳐야 합니다. 외부 정책 파일에는 README의 POST 검증 → GET 리비전 → PUT 저장 함수를 사용하고 의도한 전체 정책만 포함하세요. 이력 복원이나 JSON 저장 자체가 업스트림 라우팅 가능성을 증명하지는 않습니다.
+**KO:** 복원도 저장 전에 정책을 검증합니다. 409이면 최신 상태를 검토하고, 422이면 더 이상 존재하지 않는 이력 별칭 등 정책 문제를 고쳐야 합니다. 외부 정책 파일에는 README의 POST 검증 → GET 리비전 → PUT 저장 함수를 사용하고 의도한 전체 정책만 포함하세요. 이력 복원이나 JSON 저장 자체가 업스트림 라우팅 가능성을 증명하지는 않습니다.
 
 ## Operational checks / 운영 확인
 
@@ -169,8 +178,10 @@ jq -n --arg entry_id "$entry_id" --argjson revision "$revision" \
 | Negative inference plus no recorded upstream call / 거부 응답과 업스트림 호출 없음 | Actual tested denial, unlike an unrelated native 400/503 / 무관한 네이티브 400/503과 구분되는 실제 거부 |
 | E2E_NO_PLUGIN=1 | Host baseline only; plugin scenarios skipped / 호스트 기준만 확인, 플러그인 시나리오 제외 |
 
-**EN:** Preserve test environment/version, exact configuration, PASS/FAIL/SKIP output and retained artifacts. Read [verification](verification.md) for the current five-platform build and management-only example results. All four examples validated and persisted on CPA v8.0.44, but that fixture had `credential_count:0`/`routable:false`, empty previews, and an auto dry-run `no_routable_candidates`. Do not turn those results into an inference, upgrade, or gateway enforcement claim.
+**EN:** Preserve environment/version, configuration, PASS/FAIL/SKIP output and artifacts. The [final evidence](verification.md) records 29 PASS / 0 FAIL / 0 SKIP on real CPA v8.0.44 with a fake compatible upstream, including routing/rewrite, numeric upgrades and restart recovery. Earlier four-example validation was management-only. Headless Chrome verified all four tabs in EN/KO with strict CSP and no observed violations; management-center iframe login was not tested beyond resource loading. Live Codex OAuth forwarding, Responses WS continuation behavior and raw management bypasses are source-verified only; live provider credentials and proxy enforcement remain unverified.
 
-**KO:** 테스트 환경·버전·정확한 설정, PASS/FAIL/SKIP 출력과 보존 산출물을 남기세요. 현재 다섯 플랫폼 빌드와 관리 API 예제 결과는 [검증 문서](verification.md)에 있습니다. CPA v8.0.44에서 예제 네 개를 검증·저장했지만 해당 테스트는 `credential_count:0`/`routable:false`, 빈 미리보기, 자동 확인 `no_routable_candidates`였습니다. 이를 추론·업그레이드·게이트웨이 집행 성공으로 해석하면 안 됩니다.
+**KO:** 환경·버전·설정·PASS/FAIL/SKIP 출력과 산출물을 보존하세요. [최종 근거](verification.md)는 실제 CPA v8.0.44와 가짜 호환 업스트림에서 29 PASS / 0 FAIL / 0 SKIP이며 라우팅·치환·숫자 버전 업그레이드·재시작 복구를 포함합니다. 이전 예제 네 개 검사는 관리 API만의 근거입니다. headless Chrome은 네 탭의 EN/KO와 엄격한 CSP, 관찰된 위반 없음을 확인했지만 관리 센터 iframe 로그인은 리소스 로딩 외에 미검증입니다. 실제 Codex OAuth 전달·Responses WS continuation·관리 원시 요청 우회는 소스만 확인했으며 실제 제공자 자격 증명과 프록시 집행은 미검증입니다.
 
-<!-- E2E: Add separately scoped production-host integration and reverse-proxy verification evidence; retain failures/skips and host limitations. -->
+**EN:** The harness observation rows confirm **no realtime/live guard denial with valid built-in keys** (native 503 `auth_not_found` both whitelist off/on) and **hidden Gemini detail metadata exposed with HTTP 200**. Block those paths at the mandatory gateway. WS continuation frames cannot be selected by path once upgraded; strict policy requires blocking the two Responses GET upgrade paths above. With the guard enabled, Alpha is denied whenever whitelist rules or alias target hiding require final-model authorization; published Dock aliases are always denied even with guard off. Exact native/prefix/raw allows are not sufficient mapping evidence. Both Alpha paths returned denial-executor 503 and zero upstream calls in the harness. Unrestricted default policy passes native Alpha through, but no Codex credentials were present to exercise forwarding. See [contract §6](design/contract.md#6-guard--uncovered-endpoints).
+
+**KO:** 관찰 행에서 **유효한 기본 키로 realtime/live guard 거부가 없음**(whitelist off/on 모두 네이티브 503 `auth_not_found`)과 **Gemini 숨김 상세 메타데이터 HTTP 200 노출**을 확인했습니다. 필수 게이트웨이에서 차단하세요. WS 업그레이드 후 continuation 프레임은 경로로 선택할 수 없으므로 엄격한 정책은 위 Responses GET 두 경로를 차단해야 합니다. guard가 켜져 있고 허용 목록 규칙·별칭 대상 숨김이 최종 모델 승인을 요구하면 Alpha는 거부됩니다. 공개 Dock 별칭은 guard가 꺼져도 항상 거부되며 exact native/prefix/raw 허용만으로 매핑을 검증할 수 없습니다. 하네스에서 Alpha 두 경로 모두 거부 executor의 503과 업스트림 호출 0회였습니다. 제한 없는 기본 정책은 네이티브 Alpha를 통과시키지만 전달을 실행할 Codex 자격 증명은 없었습니다. [계약 §6](design/contract.md#6-guard--uncovered-endpoints)을 참고하세요.
