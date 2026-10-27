@@ -1,0 +1,15 @@
+# Merge this subtree into CPA v8 config.yaml. This is not a complete host config.
+# Relative plugins.dir is relative to CPA's working directory, not config.yaml.
+plugins:
+  enabled: true
+  dir: plugins
+  # Optional self-hosted store; regenerate dist/registry.json with your BASE_URL.
+  # store-sources:
+  #   - https://plugins.example.com/cpa-model-dock/registry.json
+  configs:
+    cpa-model-dock:
+      enabled: true
+      priority: 1000 # must exceed every other installed plugin's priority
+      state-dir: /var/lib/cliproxyapi/cpa-model-dock # absolute, writable by CPA
+      catalog-refresh-interval: 5m # Go duration, minimum 30s
+      guard-uncovered-endpoints: true

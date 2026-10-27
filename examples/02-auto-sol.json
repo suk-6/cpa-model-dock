@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "revision": 0,
+  "settings": {
+    "whitelist_enabled": false,
+    "rewrite_response_model": false,
+    "refresh_interval_seconds": 300
+  },
+  "families": [],
+  "aliases": [
+    {
+      "name": "gpt-sol",
+      "enabled": true,
+      "mode": "auto",
+      "target": "gpt-6.1-sol",
+      "provider": "",
+      "expose_original": true,
+      "rewrite_response_model": null,
+      "auto": {
+        "family": "builtin:gpt-sol",
+        "include_prerelease": false,
+        "health_check": false
+      }
+    }
+  ],
+  "rules": []
+}

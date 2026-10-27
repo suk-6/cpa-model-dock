@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "revision": 0,
+  "settings": {
+    "whitelist_enabled": true,
+    "rewrite_response_model": true,
+    "refresh_interval_seconds": 300
+  },
+  "families": [],
+  "aliases": [
+    {
+      "name": "gpt-sol",
+      "enabled": true,
+      "mode": "pinned",
+      "target": "gpt-6.1-sol",
+      "provider": "",
+      "expose_original": false,
+      "rewrite_response_model": null,
+      "auto": {
+        "family": "builtin:gpt-sol",
+        "include_prerelease": false,
+        "health_check": false
+      }
+    }
+  ],
+  "rules": [
+    {
+      "id": "r_publish_sol",
+      "enabled": true,
+      "kind": "alias",
+      "value": "gpt-sol",
+      "note": "Publish only this alias; no original IDs"
+    }
+  ]
+}
