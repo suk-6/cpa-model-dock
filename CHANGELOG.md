@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1 — 2026-10-27
+
+- Fix the Web UI failing with `crypto.randomUUID is not a function` when adding
+  rules or families while CPA is served over plain HTTP from a non-localhost host.
+
 ## 0.1.0 — 2026-10-27
 
 - Native CLIProxyAPI plugin for pinned model aliases, conservative per-alias

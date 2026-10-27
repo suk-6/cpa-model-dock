@@ -4,7 +4,7 @@ GOCACHE ?= $(TMPDIR)/cpa-model-dock-go-cache
 ifeq ($(strip $(TMPDIR)),)
 GOCACHE := /tmp/cpa-model-dock-go-cache
 endif
-VERSION ?= 0.1.0
+VERSION ?= 0.1.1
 PLATFORMS ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
 BASE_URL ?= https://github.com/suk-6/cpa-model-dock/releases/download/v$(VERSION)
 PACKAGE_ONLY ?= 0

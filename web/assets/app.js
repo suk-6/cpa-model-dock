@@ -282,11 +282,15 @@ function startApp() {
     $('#dialog').innerHTML = `<div class="page-heading"><h2 id="dialog-title">${T(modal.title)}</h2>${btn('close-modal','close','','small')}</div><div class="dialog-body">${body}</div>`;
     setBusy(state.busy);
   }
+  // crypto.randomUUID only exists in secure contexts (HTTPS/localhost); CPA is often served over plain HTTP.
+  function randomId() {
+    return [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2,'0')).join('');
+  }
   function edit(collection,index) {
     const defaults = {
       aliases: { name:'', enabled:true, mode:'pinned', target:'', provider:'', expose_original:false, rewrite_response_model:null, auto:{ family:families()[0]?.id || '', include_prerelease:false, health_check:false } },
-      families: { id:`fam_${crypto.randomUUID().replaceAll('-','')}`, name:'', template:'gpt-{version}-sol', provider:'', allow_dated:true },
-      rules: { id:`r_${crypto.randomUUID().replaceAll('-','')}`, enabled:true, kind:'exact', value:'', note:'' },
+      families: { id:`fam_${randomId()}`, name:'', template:'gpt-{version}-sol', provider:'', allow_dated:true },
+      rules: { id:`r_${randomId()}`, enabled:true, kind:'exact', value:'', note:'' },
     };
     const adding = index === undefined;
     const value = structuredClone(adding ? defaults[collection] : state.draft[collection][index]);

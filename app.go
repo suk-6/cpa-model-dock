@@ -26,7 +26,7 @@ import (
 
 const pluginID = "cpa-model-dock"
 
-var pluginVersion = "0.1.0"
+var pluginVersion = "0.1.1"
 
 const healthProbeTimeout = 5 * time.Second
 
