@@ -22,6 +22,7 @@ type Template struct {
 	base                 *regexp.Regexp
 	dated                *regexp.Regexp
 	explicitDate         bool
+	allowDated           bool
 	shortDateUnambiguous bool
 }
 
@@ -44,13 +45,13 @@ func Compile(template string, allowDated bool) (*Template, error) {
 	expression := regexp.QuoteMeta(template)
 	expression = strings.ReplaceAll(expression, regexp.QuoteMeta("{version}"), `(?P<version>`+versionRE+`)`)
 	expression = strings.ReplaceAll(expression, regexp.QuoteMeta("{date}"), `(?P<date>`+dateRE+`)`)
-	t := &Template{explicitDate: strings.Contains(template, "{date}"), shortDateUnambiguous: !strings.HasSuffix(template, "{version}")}
+	t := &Template{explicitDate: strings.Contains(template, "{date}"), allowDated: allowDated, shortDateUnambiguous: !strings.HasSuffix(template, "{version}")}
 	var err error
 	t.base, err = regexp.Compile(`(?i)^` + expression + prereleaseRE + `$`)
 	if err != nil {
 		return nil, errors.New("invalid family expression")
 	}
-	if allowDated && !t.explicitDate {
+	if !t.explicitDate {
 		t.dated, err = regexp.Compile(`(?i)^` + expression + `-(?P<date>` + dateRE + `)` + prereleaseRE + `$`)
 		if err != nil {
 			return nil, errors.New("invalid dated family expression")
@@ -63,9 +64,13 @@ func (t *Template) Parse(id string) (Value, bool) {
 	if t == nil {
 		return Value{}, false
 	}
-	// Try the dated form first: a greedy dashed version must not swallow a date.
+	// Recognize dated forms even when disabled: a greedy dashed version must
+	// never swallow a date (including an invalid or ambiguous calendar suffix).
 	if t.dated != nil {
 		if t.dated.MatchString(id) {
+			if !t.allowDated {
+				return Value{}, false
+			}
 			v, ok := parse(t.dated, id)
 			if !ok {
 				return Value{}, false
@@ -86,6 +91,12 @@ func parse(re *regexp.Regexp, id string) (Value, bool) {
 	}
 	v := Value{Version: m[re.SubexpIndex("version")]}
 	for _, part := range strings.FieldsFunc(v.Version, func(r rune) bool { return r == '.' || r == '-' }) {
+		// Calendar dates belong only in the date capture, never in a dotted
+		// or dashed version component. Check the raw length before stripping
+		// zeros so other large numeric versions keep their existing semantics.
+		if len(part) == 8 && validDate(part) {
+			return Value{}, false
+		}
 		part = strings.TrimLeft(part, "0")
 		if part == "" {
 			part = "0"

@@ -96,6 +96,79 @@ func TestDatesAndAmbiguity(t *testing.T) {
 	}
 }
 
+func TestOptionalDateCannotBecomeVersionComponent(t *testing.T) {
+	for _, allowDated := range []bool{false, true} {
+		tpl := mustTemplate(t, "claude-opus-{version}", allowDated)
+		for _, suffix := range []string{"20251101", "2025-11-01", "20251101-preview", "2025-11-01-rc2"} {
+			name := "claude-opus-4-5-" + suffix
+			v, ok := tpl.Parse(name)
+			if ok != allowDated {
+				t.Errorf("allowDated=%v Parse(%q) = %+v, %v", allowDated, name, v, ok)
+			} else if ok && (v.Version != "4-5" || v.Date != "20251101" || len(v.Components) != 2) {
+				t.Errorf("date became a version component: %+v", v)
+			}
+		}
+		// Short trailing dates remain ambiguous; invalid calendars must never
+		// fall back to a numeric version either, regardless of allow_dated.
+		for _, suffix := range []string{"1101", "251101", "20250230", "2025-13-01", "20250230-beta"} {
+			if v, ok := tpl.Parse("claude-opus-4-5-" + suffix); ok {
+				t.Errorf("allowDated=%v accepted ambiguous/invalid date %q: %+v", allowDated, suffix, v)
+			}
+		}
+		for _, number := range []string{"5", "123456789", "9999999999999999999999999"} {
+			v := mustParse(t, tpl, "claude-opus-4-"+number)
+			if v.Date != "" || len(v.Components) != 2 || v.Components[1] != number {
+				t.Errorf("allowDated=%v lost numeric version: %+v", allowDated, v)
+			}
+		}
+		a := mustParse(t, tpl, "claude-opus-4-9999999999999999999999999")
+		b := mustParse(t, tpl, "claude-opus-4-10000000000000000000000000")
+		if cmp, known := Compare(a, b); !known || cmp != -1 {
+			t.Errorf("allowDated=%v huge numeric ordering = %d,%v", allowDated, cmp, known)
+		}
+	}
+	// Explicit date tokens still opt in, even when optional dates are disabled.
+	for _, date := range []string{"1101", "251101", "20251101", "2025-11-01"} {
+		tpl := mustTemplate(t, "claude-opus-{version}-{date}", false)
+		v := mustParse(t, tpl, "claude-opus-4-5-"+date)
+		if v.Version != "4-5" || v.Date == "" || len(v.Components) != 2 {
+			t.Errorf("explicit date became a version component: %+v", v)
+		}
+	}
+}
+
+func TestCalendarDateComponentsRequireDateToken(t *testing.T) {
+	for _, allowDated := range []bool{false, true} {
+		for _, family := range []struct{ pattern, prefix, suffix string }{
+			{"claude-opus-{version}", "claude-opus-", ""},
+			{"gpt-{version}-sol", "gpt-", "-sol"},
+			{"model-{date}-{version}", "model-20251201-", ""},
+			{"model-{version}-{date}", "model-", "-20251201"},
+		} {
+			tpl := mustTemplate(t, family.pattern, allowDated)
+			for _, number := range []string{"4.5.20251101", "4-20251101-5", "20251101", "20240229.1", "4.00010101", "4.20251101-beta"} {
+				name := family.prefix + number + family.suffix
+				if v, ok := tpl.Parse(name); ok {
+					t.Errorf("allowDated=%v template=%q swallowed calendar component %q: %+v", allowDated, family.pattern, name, v)
+				}
+			}
+			// Only raw components of exactly eight digits with a valid calendar
+			// are reserved. Other lengths and invalid calendars remain numeric.
+			for _, number := range []string{"4.20250230", "4-20250230-5", "4.99999999", "4.00000101", "4.1101", "4-251101-5", "4.123456789", "4.020251101", "4-9999999999999999999999999-5"} {
+				v := mustParse(t, tpl, family.prefix+number+family.suffix)
+				if v.Version != number {
+					t.Errorf("numeric component reinterpreted as a date: %+v", v)
+				}
+			}
+		}
+		// A permitted trailing date must not hide another date inside version.
+		tpl := mustTemplate(t, "claude-opus-{version}", allowDated)
+		if v, ok := tpl.Parse("claude-opus-4-20251101-5-20251201"); ok {
+			t.Errorf("allowDated=%v swallowed inner date: %+v", allowDated, v)
+		}
+	}
+}
+
 func TestTemplateValidationAndLiteralEscaping(t *testing.T) {
 	for _, pattern := range []string{"", "gpt-sol", "gpt-{version}-{version}", "gpt-{version}-{other}", "gpt-{version}{date}", "gpt-*-{version}", "gpt/{version}", " gpt-{version}"} {
 		if _, err := Compile(pattern, true); err == nil {
