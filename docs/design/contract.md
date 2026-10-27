@@ -177,24 +177,26 @@ route with its management key, including previews. Requests and responses are JS
 The shapes below are the wire contract; internal policy/evaluator structs are not
 response DTOs. All arrays are arrays, including when empty; object maps are `{}`
 when empty. Timestamps are ISO 8601 UTC. Human-readable messages are safe display
-text, not stable identifiers; clients branch on `code`.
+text, not stable identifiers; clients branch on `code` and interpolate `params`; messages remain complete English
+fallbacks for API consumers. Never derive translation identifiers from message text.
 
 | Method | Path | Body/query | Returns (HTTP 200 unless specified below) |
 |---|---|---|---|
-| GET | `/overview` | – | `{plugin_version,host_schema,policy_enabled,whitelist_enabled,counts:{public_models,public_aliases},active_mappings:[{alias,target}],recent_auto_updates:HistoryEntry[],catalog:{last_refresh_at,ok,error},guard:{enabled,verified,limitations:string[]},warnings:string[]}` |
+| GET | `/overview` | – | `{plugin_version,host_schema,policy_enabled,whitelist_enabled,counts:{public_models,public_aliases},active_mappings:[{alias,target}],recent_auto_updates:HistoryEntry[],catalog:{last_refresh_at,ok,error,error_detail:Text|null},guard:{enabled,verified,covered:Text[],limitations:Text[]},warnings:Text[]}` |
 | GET | `/state` | – | `StateView` |
 | PUT | `/state` | full `{revision?,settings,families,aliases,rules}` | `StateView` with new revision |
 | POST | `/validate` | full PUT-shaped draft; revision ignored | `{valid,details:Detail[],preview:{public_models:string[],public_aliases:string[]}}` |
-| GET | `/catalog` | – | `{refreshed_at,ok,error,models:[{id,providers:string[],credential_count,routable,public,reason:Reason}]}` |
+| GET | `/catalog` | – | `{refreshed_at,ok,error,error_detail:Text|null,models:[{id,providers:string[],credential_count,routable,public,reason:Reason}]}` |
 | POST | `/catalog/refresh` | `{}`; supplied revision ignored | same catalog shape, without revision |
 | POST | `/aliases/check` | `{revision?,alias_id?:string,dry_run?:bool}` | `{results:AliasCheckResult[],revision}` |
 | POST | `/rules/preview` | `{settings?,families?,aliases?,rules?}` | `{rules:[{id,matches:string[]}],public_models:string[],public_aliases:string[]}` |
-| POST | `/explain` | `{model:string,draft?:{settings?,families?,aliases?,rules?}}` | `{allowed,status,code,reason:string,steps:Reason[],resolved_target?:string}` |
+| POST | `/explain` | `{model:string,draft?:{settings?,families?,aliases?,rules?}}` | `{allowed,status,code,reason:Reason,steps:Reason[],resolved_target?:string}` |
 | GET | `/history` | query `limit` (default 100, integer 1–1000), `before` (exclusive entry ID) | `{entries:HistoryEntry[],next_before:string|null}` |
 | POST | `/history/restore` | `{entry_id:string,revision?,scope:"state"|"alias_target"}` | `StateView` with new revision |
 
-`Reason` is exactly `{code:string,message:string}`. `Detail` is exactly
-`{path:string,code:string,message:string}`; paths identify editable fields, e.g.
+`Text` and `Reason` are exactly `{code:string,params:object,message:string}`.
+`params` is always an object, including `{}` when no parameters are needed.
+`Detail` is exactly `{path:string,code:string,params:object,message:string}`; paths identify editable fields, e.g.
 `aliases[0].name`, `aliases[0].auto.family`, `families[0].template`, `rules[0].value`.
 
 `StateView` contains exactly `{schema,revision,updated_at,settings,families,
@@ -225,8 +227,21 @@ Overview counts separate public real models and aliases. `active_mappings`
 contains all enabled configured aliases, including unpublished or currently
 unavailable targets, and is not routing verification. `recent_auto_updates`
 contains up to five complete newest `actor:"auto",kind:"alias_target"` history
-entries. Catalog errors are `null` on success or a safe string on failure.
-Guard `verified` remains false; `limitations` and `warnings` are arrays of strings.
+entries. Catalog `error` remains `null` on success or a safe English string on failure;
+`error_detail` is null on success and Text with code `catalog_unavailable` on
+failure. Guard `verified` remains false, and `enabled` describes configuration,
+not protection against bypass. `covered` and `limitations` are informational
+Text arrays, independent of that flag. Ordinary HTTP model requests (including
+streaming), model lists, and the initial Responses WebSocket request are covered.
+Realtime/live, ongoing WebSocket messages, single-model detail, and the admin API
+tool require reverse-proxy controls. Valid API keys and realtime client secrets
+can bypass this policy on standard CPA. This API makes no protective claim for
+the nonexclusive frontend guard.
+
+`warnings` contains **only actionable** priority verification, catalog failure,
+policy unavailability, and enabled aliases with unavailable targets. Coverage
+limitations never populate this attention list. Priority remains unverified
+until the installed-plugin order is checked on the host.
 Catalog visibility uses the policy decision and routability; catalog-only models
 have `public:false` and `reason.code:"not_routable"`.
 
@@ -239,14 +254,15 @@ and catalog-only models even when final public arrays exclude them; alias rules
 match configured alias names. Disabled rules have empty match arrays. Explain's
 `status` simulates inference (200/403/404/503); the management response remains
 HTTP 200. Its `code` describes the policy decision (`hidden_by_alias`,
-`alias_not_published`, `not_whitelisted`, `rule:<id>`, etc.), distinct from an
-inference adapter's protocol error envelope. `steps` is an array of `Reason`
-objects, not strings; `resolved_target` is present only when resolved.
+`alias_not_published`, `not_whitelisted`, `rule_allowed`, etc.), distinct from an
+inference adapter's protocol error envelope. `rule_allowed` carries `{rule_id}` in both the reason and final step.
+The `normalized` step carries `{model}` with the normalized model ID.
+`steps` is an array of `Reason` objects; `resolved_target` is present only when resolved.
 
 Only PUT state, **applying** alias checks, and history restore require the current
 integer body `revision` or `If-Match: "<revision>"`. If both are supplied, both
 must match the current revision. Missing, malformed, disagreeing, or stale tokens
-return HTTP **409** `{error:{code:"revision_conflict",message},state:StateView}`.
+return HTTP **409** `{error:{code:"revision_conflict",params:{},message},state:StateView}`.
 An applying check advances policy revision exactly once **only if at least one
 target changes**; unchanged checks may update runtime status but do not change
 policy timestamps or history. State saves (including no-op saves) and successful
@@ -263,7 +279,7 @@ alias checks are independent policy mutations and use the applying-check rules.
 
 Malformed/non-object JSON returns 400 `invalid_json`; an empty body is `{}`.
 Bodies over 1 MiB return 413 `body_too_large`. Invalid saves, previews, explains,
-and restores return HTTP **422** `{error:{code:"validation_failed",message,
+and restores return HTTP **422** `{error:{code:"validation_failed",params:{},message,
 details:Detail[]}}`, without saving. `/validate` instead returns HTTP **200**
 `valid:false` with details and empty preview arrays. Unknown routes return 404
 `not_found`; unsupported methods on known paths return 405 `method_not_allowed`
@@ -291,7 +307,7 @@ History is newest first, capped at 1000 exposed entries. `before` is an exclusiv
 `next_before` is the last returned ID when more entries remain, otherwise null.
 Unknown cursors, duplicate cursor/limit parameters, and invalid limits return
 400 `invalid_cursor`/`invalid_limit`. `HistoryEntry` is exactly
-`{id,at,actor,kind,summary,before,after}`. State saves use
+`{id,at,actor,kind,summary,summary_detail:Text,before,after}`. State saves use
 `actor:"user",kind:"state"`; target switches use
 `actor:"auto",kind:"alias_target"`. State before/after values are policy
 snapshots with schema/revision/timestamp but no runtime fields; alias-target
@@ -308,8 +324,78 @@ appends a new user entry of the restored scope without rolling revision back or
 deleting history. State saves/restores clear all alias runtime status;
 alias-target restore clears only the restored alias's status.
 
+
+`summary` remains a complete English string. `summary_detail` describes semantic
+before/after changes, including for old records without stored details. It must
+not report a generic policy update when a diff is available. Multiple changes
+use `{code:"changes",params:{count:N,changes:Text[]},message:"N changes: …"}`;
+a single change is returned directly. Array order and policy revision/timestamp
+changes are not semantic changes. No-op saves use `policy_unchanged`. New disk
+records persist the detail; legacy full snapshots are sufficient to derive it.
+A record without usable snapshots uses `history_legacy` and `{summary}`.
+
+Changes are ordered by alias ID, then rule ID, then whitelist, other settings,
+and families. For an existing alias, emit rename, enable/disable, target change,
+and finally `alias_changed` only when other fields differ. Creation/deletion is
+one event. Rule enable/disable is followed by `rule_changed` if kind, value, or
+note also differs. Automatic changes use `alias_target_auto_updated`, while user
+edits use `alias_target_changed` (including a user changing a pinned target).
+Restore uses `restored` with the selected opaque entry ID. Each projected alias
+target entry has only that alias's summary, while its before/after remain compact.
+
+The deterministic text code/parameter inventory is below. Parameter names in
+braces denote object keys; parameters are strings unless noted. Unlisted
+parameter sets are `{}`. The same code has the same meaning across endpoints;
+clients may fall back to `message` for an unknown code.
+
+| Context | Codes | Params |
+|---|---|---|
+| Attention | `priority_unverified`, `catalog_unavailable`, `policy_unavailable` | `{}` |
+| Attention alias | `alias_target_unavailable` | `{alias_id,alias,target}` in overview; `{}` for a policy decision |
+| Covered | `http_model_requests_covered`, `model_lists_covered`, `responses_websocket_initial_covered` | `{}` |
+| Proxy controls | `realtime_proxy_required`, `websocket_messages_proxy_required`, `model_detail_proxy_required`, `admin_api_tool_proxy_required` | `{}` |
+| Alias history | `alias_created` | `{alias_id,alias,target}` |
+| Alias history | `alias_renamed` | `{alias_id,from,to}` (names) |
+| Alias history | `alias_deleted`, `alias_enabled`, `alias_disabled`, `alias_changed` | `{alias_id,alias}` |
+| Target history | `alias_target_changed`, `alias_target_auto_updated` | `{alias_id,alias,from,to}` (model IDs) |
+| Rule history | `rule_added`, `rule_removed`, `rule_enabled`, `rule_disabled`, `rule_changed` | `{rule_id,kind,value}` (removed uses old values; others use new) |
+| Policy history | `whitelist_enabled`, `whitelist_disabled`, `settings_changed`, `families_changed`, `policy_unchanged` | `{}` |
+| Restore history | `restored` | `{entry_id}` |
+| Multiple changes | `changes` | `{count:number,changes:Text[]}` |
+| Legacy history | `history_legacy` | `{summary}` |
+| Explain step | `normalized`, `resolved_model` | `{model}` |
+| Policy reason | `rule_allowed` | `{rule_id}` |
+| Policy reason | `alias` | `{alias,target}` |
+| Policy reasons | `alias_not_published`, `hidden_by_alias`, `whitelist_disabled`, `not_whitelisted`, `policy_unavailable`, `not_routable` | `{}` |
+| Alias check/status | `newer_version` | `{from,to}` (previous and proposed/current model IDs) |
+| Alias check/status | `not_checked`, `up_to_date`, `ambiguous`, `current_unparseable`, `no_routable_candidates`, `catalog_unavailable`, `pinned`, `disabled`, `policy_unavailable`, `cancelled`, `unknown_family`, `invalid_family`, `health_check_unverified`, `health_check_failed` | `{}` |
+| Candidate reason | `candidate`, `selected`, `not_routable`, `alias_conflict` | `{}` |
+
+Every validation detail includes `params.field` equal to its complete `path`,
+including nested settings and auto fields. Context-specific validation codes
+preserve semantic differences that must not be collapsed into `required` or
+`invalid_scope`:
+
+| Validation codes | Meaning / additional params beyond `{field}` |
+|---|---|
+| `required_id`, `required_family_name`, `required_alias_name`, `required_alias_target`, `required_rule_value`, `required_model`, `required_entry_id` | The named value is required |
+| `required_revision`, `required_full_state_field`, `required_setting` | A concurrency token, full replacement section, or full replacement setting is required, respectively |
+| `invalid_type` | `{expected}` is `string`, `boolean`, `integer`, `object`, `array_of_objects`, or `non_null` |
+| `invalid_revision_body`, `invalid_revision_header`, `revision_disagreement` | Nonnegative integer body token, quoted single header token, or disagreement between tokens; mutation token failures still return the revision conflict envelope |
+| `alias_name_conflict`, `alias_catalog_conflict` | Collision with another alias or with a real catalog model, respectively |
+| `invalid_alias_slash` | Alias name contains a slash |
+| `invalid_template_tokens`, `invalid_template_literal`, `invalid_template_expression` | Invalid token counts, literal/adjacent tokens, or expression, respectively |
+| `invalid_restore_scope`, `restore_scope_mismatch` | Invalid scope name or scope not matching the selected entry |
+| `unsupported_schema`, `invalid_revision`, `invalid_refresh_interval`, `invalid_id`, `duplicate_id`, `builtin_read_only`, `family_conflict`, `invalid_provider`, `invalid_alias_name`, `invalid_mode`, `invalid_target`, `unknown_target`, `unknown_family`, `provider_conflict`, `alias_target_alias`, `invalid_value`, `invalid_exact`, `invalid_pattern`, `unknown_alias`, `invalid_rule_kind`, `id_unavailable`, `alias_not_found`, `invalid_state` | Domain error identified by code and complete field path |
+
+Error envelopes also include `params:{}`. Parse errors use `invalid_json` with
+`{field:"body"}` and oversized bodies use `body_too_large` with
+`{field:"body",max_bytes:1048576}`. Validation ordering is deterministic: sections
+and array positions follow parsing order; editable keys within each object are
+visited lexically. Domain validation retains field-check order.
+
 Resources (public, static only): `/v0/resource/plugins/cpa-model-dock/index.html`
-(Menu `Model Dock`), `/app.js`, `/app.css`, `/i18n.js`. Only these four exact
+(Menu `Model Dock`), `/app.js`, `/app.css`, `/i18n.js`, `/favicon.svg` (MIME `image/svg+xml`). Only these five exact
 filenames are served; GET and HEAD are supported. No management data is public.
 
 ## 6. Guard / uncovered endpoints

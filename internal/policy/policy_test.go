@@ -102,7 +102,7 @@ func TestDecisionOrderAndBypassResistance(t *testing.T) {
 			t.Errorf("whitelist bypass %s: %+v", name, d)
 		}
 	}
-	if d := snap.Decide("gpt-6.10-sol"); !d.Allowed || d.Code != "rule:r_family" {
+	if d := snap.Decide("gpt-6.10-sol"); !d.Allowed || (d.Code != "rule_allowed" || d.RuleID != "r_family") {
 		t.Fatalf("new family version denied: %+v", d)
 	}
 	if d := snap.DecideResolved("team/gpt-6.1-sol"); d.Allowed || d.Code != "hidden_by_alias" {
@@ -264,15 +264,15 @@ func TestValidationDetails(t *testing.T) {
 		{"schema", func(s *State) { s.Schema = 0 }, "schema", "unsupported_schema"},
 		{"revision", func(s *State) { s.Revision = -1 }, "revision", "invalid_revision"},
 		{"refresh", func(s *State) { s.Settings.RefreshIntervalSeconds = 29 }, "settings.refresh_interval_seconds", "invalid_refresh_interval"},
-		{"missing id", func(s *State) { s.Aliases[0].ID = "" }, "aliases[0].id", "required"},
+		{"missing id", func(s *State) { s.Aliases[0].ID = "" }, "aliases[0].id", "required_id"},
 		{"mode", func(s *State) { s.Aliases[0].Mode = "latest" }, "aliases[0].mode", "invalid_mode"},
-		{"missing target", func(s *State) { s.Aliases[0].Target = "" }, "aliases[0].target", "required"},
+		{"missing target", func(s *State) { s.Aliases[0].Target = "" }, "aliases[0].target", "required_alias_target"},
 		{"unknown target", func(s *State) { s.Aliases[0].Target = "not-catalogued" }, "aliases[0].target", "unknown_target"},
 		{"suffix target", func(s *State) { s.Aliases[0].Target = "gpt-6.1-sol(high)" }, "aliases[0].target", "invalid_target"},
-		{"catalog collision", func(s *State) { s.Aliases[0].Name = "GPT-6.1-SOL" }, "aliases[0].name", "alias_conflict"},
+		{"catalog collision", func(s *State) { s.Aliases[0].Name = "GPT-6.1-SOL" }, "aliases[0].name", "alias_catalog_conflict"},
 		{"suffix name", func(s *State) { s.Aliases[0].Name = "gpt-sol(high)" }, "aliases[0].name", "invalid_alias_name"},
 		{"prefix name", func(s *State) { s.Aliases[0].Name = "team/gpt-sol" }, "aliases[0].name", "invalid_alias_name"},
-		{"duplicate alias", func(s *State) { a := s.Aliases[0]; a.ID = "al_2"; a.Name = "GPT-SOL"; s.Aliases = append(s.Aliases, a) }, "aliases[1].name", "alias_conflict"},
+		{"duplicate alias", func(s *State) { a := s.Aliases[0]; a.ID = "al_2"; a.Name = "GPT-SOL"; s.Aliases = append(s.Aliases, a) }, "aliases[1].name", "alias_name_conflict"},
 		{"duplicate ID", func(s *State) { a := s.Aliases[0]; a.Name = "other-alias"; s.Aliases = append(s.Aliases, a) }, "aliases[1].id", "duplicate_id"},
 		{"chain", func(s *State) {
 			a := s.Aliases[0]
@@ -286,7 +286,7 @@ func TestValidationDetails(t *testing.T) {
 		{"builtin mutation", func(s *State) {
 			s.Families = []Family{{ID: "builtin:gpt-sol", Name: "Other", Template: "gpt-{version}-sol"}}
 		}, "families[0].id", "builtin_read_only"},
-		{"template", func(s *State) { s.Families = []Family{{ID: "fam_1", Name: "Other", Template: "gpt-*"}} }, "families[0].template", "invalid_template"},
+		{"template", func(s *State) { s.Families = []Family{{ID: "fam_1", Name: "Other", Template: "gpt-*"}} }, "families[0].template", "invalid_template_tokens"},
 		{"rule family", func(s *State) { s.Rules = []Rule{{ID: "r", Kind: "family", Value: "missing"}} }, "rules[0].value", "unknown_family"},
 		{"rule alias", func(s *State) { s.Rules = []Rule{{ID: "r", Kind: "alias", Value: "missing"}} }, "rules[0].value", "unknown_alias"},
 		{"rule kind", func(s *State) { s.Rules = []Rule{{ID: "r", Kind: "regex", Value: ".*"}} }, "rules[0].kind", "invalid_rule_kind"},

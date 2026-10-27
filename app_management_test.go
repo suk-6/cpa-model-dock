@@ -8,6 +8,7 @@ import (
 
 	"github.com/cpa-model-dock/cpa-model-dock/internal/autoupdate"
 	"github.com/cpa-model-dock/cpa-model-dock/internal/mgmt"
+	"github.com/cpa-model-dock/cpa-model-dock/internal/policy"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
@@ -58,6 +59,10 @@ func TestManagementRefreshCheckAndRestorePolicyRevisions(t *testing.T) {
 	}
 	for _, row := range rows[:2] {
 		obj := row.(map[string]any)
+		detail := obj["summary_detail"].(policy.Text)
+		if detail.Code != "alias_target_auto_updated" || detail.Params["from"] != "gpt-6.1-sol" || detail.Params["to"] != "gpt-6.2-sol" || obj["summary"] != detail.Message {
+			t.Fatal(obj)
+		}
 		if len(obj["before"].(map[string]any)) != 2 || len(obj["after"].(map[string]any)) != 2 {
 			t.Fatal(obj)
 		}
@@ -70,6 +75,11 @@ func TestManagementRefreshCheckAndRestorePolicyRevisions(t *testing.T) {
 	id := first["before"].(map[string]any)["alias_id"].(string)
 	a.status[id] = autoupdate.Status{Reason: "test"}
 	restored := call("/history/restore", map[string]any{"revision": 2, "entry_id": first["id"], "scope": "alias_target"}, 200)
+	restoreRow := a.managementHistory(100, "").([]any)[0].(map[string]any)
+	restoreDetail := restoreRow["summary_detail"].(policy.Text)
+	if restoreDetail.Code != "restored" || restoreDetail.Params["entry_id"] != first["id"] {
+		t.Fatal(restoreRow)
+	}
 	if restored["revision"] != float64(3) {
 		t.Fatal(restored)
 	}

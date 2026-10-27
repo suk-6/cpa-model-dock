@@ -140,10 +140,10 @@ func TestRegistrationExactRoutesAndResources(t *testing.T) {
 	if err := json.Unmarshal(out["resources"], &resources); err != nil {
 		t.Fatal(err)
 	}
-	if len(resources) != 4 {
+	if len(resources) != 5 {
 		t.Fatalf("resources=%v", resources)
 	}
-	for i, name := range []string{"/index.html", "/app.js", "/app.css", "/i18n.js"} {
+	for i, name := range []string{"/index.html", "/app.js", "/app.css", "/i18n.js", "/favicon.svg"} {
 		if resources[i].Path != ResourceBasePath+name || resources[i].Handler != nil {
 			t.Fatalf("wrong resource %+v", resources[i])
 		}

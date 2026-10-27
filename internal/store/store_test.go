@@ -517,3 +517,32 @@ func TestSemanticallyCorruptPrimaryFallsBackToLastGood(t *testing.T) {
 		t.Fatal(restored)
 	}
 }
+
+func TestSemanticSummaryDetailPersistsAndIsDetached(t *testing.T) {
+	dir := t.TempDir()
+	disk, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, _, err := disk.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Settings.WhitelistEnabled = true
+	if _, err = disk.Save(0, state, "user", "state", "Old generic summary"); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := reopened.History(1, "")
+	d := entries[0].SummaryDetail
+	if d == nil || d.Code != "whitelist_enabled" || d.Params == nil || d.Message != "Enabled whitelist" {
+		t.Fatal(entries)
+	}
+	d.Params["mutated"] = true
+	if reopened.History(1, "")[0].SummaryDetail.Params["mutated"] != nil {
+		t.Fatal("history detail shares mutable state")
+	}
+}

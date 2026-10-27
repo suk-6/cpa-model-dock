@@ -32,7 +32,10 @@ func keys(t *testing.T, value any, want ...string) map[string]any {
 }
 func reasonShape(t *testing.T, value any) {
 	t.Helper()
-	obj := keys(t, value, "code", "message")
+	obj := keys(t, value, "code", "params", "message")
+	if _, ok := obj["params"].(map[string]any); !ok {
+		t.Fatalf("params must be an object: %v", obj)
+	}
 	for _, key := range []string{"code", "message"} {
 		if text, ok := obj[key].(string); !ok || text == "" {
 			t.Fatalf("invalid reason %v", obj)
@@ -79,8 +82,18 @@ func TestEndpointResponseFieldShapes(t *testing.T) {
 	o := decode(t, call(t, f.h, "GET", "/overview", nil), 200)
 	keys(t, o, "plugin_version", "host_schema", "policy_enabled", "whitelist_enabled", "counts", "active_mappings", "recent_auto_updates", "catalog", "guard", "warnings")
 	keys(t, o["counts"], "public_models", "public_aliases")
-	keys(t, o["catalog"], "last_refresh_at", "ok", "error")
-	guard := keys(t, o["guard"], "enabled", "verified", "limitations")
+	keys(t, o["catalog"], "last_refresh_at", "ok", "error", "error_detail")
+	guard := keys(t, o["guard"], "enabled", "verified", "limitations", "covered")
+	for _, field := range []string{"warnings"} {
+		for _, item := range o[field].([]any) {
+			reasonShape(t, item)
+		}
+	}
+	for _, field := range []string{"covered", "limitations"} {
+		for _, item := range guard[field].([]any) {
+			reasonShape(t, item)
+		}
+	}
 	if guard["verified"] != false {
 		t.Fatal(guard)
 	}
@@ -93,7 +106,7 @@ func TestEndpointResponseFieldShapes(t *testing.T) {
 			body = map[string]any{"revision": "ignored"}
 		}
 		c := decode(t, call(t, f.h, method, path, body), 200)
-		keys(t, c, "refreshed_at", "ok", "error", "models")
+		keys(t, c, "refreshed_at", "ok", "error", "error_detail", "models")
 		if c["error"] != nil {
 			t.Fatal(c)
 		}
@@ -131,6 +144,7 @@ func TestEndpointResponseFieldShapes(t *testing.T) {
 			want = append(want, "resolved_target")
 		}
 		keys(t, e, want...)
+		reasonShape(t, e["reason"])
 		for _, step := range e["steps"].([]any) {
 			reasonShape(t, step)
 		}
@@ -142,12 +156,12 @@ func TestEndpointResponseFieldShapes(t *testing.T) {
 	stateShape(t, decode(t, call(t, f.h, "POST", "/history/restore", map[string]any{"revision": 1, "entry_id": "history1", "scope": "state"}), 200))
 	conflict := decode(t, call(t, f.h, "PUT", "/state", current), 409)
 	keys(t, conflict, "error", "state")
-	keys(t, conflict["error"], "code", "message")
+	keys(t, conflict["error"], "code", "params", "message")
 	stateShape(t, conflict["state"])
 	invalid := decode(t, call(t, f.h, "POST", "/rules/preview", map[string]any{"aliases": []any{map[string]any{"name": "bad/name"}}}), 422)
-	err := keys(t, invalid["error"], "code", "message", "details")
+	err := keys(t, invalid["error"], "code", "params", "message", "details")
 	for _, detail := range err["details"].([]any) {
-		keys(t, detail, "path", "code", "message")
+		keys(t, detail, "path", "code", "params", "message")
 	}
 }
 
@@ -200,4 +214,132 @@ func TestOfflineTargetsDefaultsAndEditableProjection(t *testing.T) {
 	}
 	r := f.h.Handle(context.Background(), pluginapi.ManagementRequest{Method: "POST", Path: BasePath + "/aliases/check", Headers: http.Header{"If-Match": {`"0"`}}, Body: []byte(`{"revision":1}`)})
 	stateShape(t, decode(t, r, 409)["state"])
+}
+
+func TestOverviewCoverageAndActionableWarnings(t *testing.T) {
+	f := setup(t)
+	state := f.current.Load().StateCopy()
+	state.Aliases = []policy.Alias{{ID: "a", Name: "offline", Mode: "pinned", Target: "missing", Enabled: true}, {ID: "b", Name: "disabled", Mode: "pinned", Target: "missing"}}
+	catalog := f.current.Load().CatalogCopy()
+	catalog.OK = false
+	catalog.Error = "Provider unavailable"
+	f.current.Store(policy.New(state, catalog, false))
+	for _, enabled := range []bool{false, true} {
+		f.h.config.Guard = enabled
+		o := decode(t, call(t, f.h, "GET", "/overview", nil), 200)
+		warnings := o["warnings"].([]any)
+		codes := []string{}
+		for _, raw := range warnings {
+			reasonShape(t, raw)
+			codes = append(codes, raw.(map[string]any)["code"].(string))
+		}
+		if !reflect.DeepEqual(codes, []string{"priority_unverified", "catalog_unavailable", "policy_unavailable", "alias_target_unavailable"}) {
+			t.Fatal(codes)
+		}
+		last := warnings[3].(map[string]any)["params"].(map[string]any)
+		if !reflect.DeepEqual(last, map[string]any{"alias_id": "a", "alias": "offline", "target": "missing"}) {
+			t.Fatal(last)
+		}
+		guard := o["guard"].(map[string]any)
+		if guard["enabled"] != enabled || guard["verified"] != false {
+			t.Fatal(guard)
+		}
+		for key, want := range map[string][]string{
+			"covered":     {"http_model_requests_covered", "model_lists_covered", "responses_websocket_initial_covered"},
+			"limitations": {"realtime_proxy_required", "websocket_messages_proxy_required", "model_detail_proxy_required", "admin_api_tool_proxy_required"},
+		} {
+			got := []string{}
+			for _, raw := range guard[key].([]any) {
+				reasonShape(t, raw)
+				got = append(got, raw.(map[string]any)["code"].(string))
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatal(got)
+			}
+		}
+		c := o["catalog"].(map[string]any)
+		if c["error"] != "Provider unavailable" {
+			t.Fatal(c)
+		}
+		reasonShape(t, c["error_detail"])
+	}
+}
+
+func TestExplainStableCodesAndNormalizedParams(t *testing.T) {
+	f := setup(t)
+	state := f.current.Load().StateCopy()
+	state.Settings.WhitelistEnabled = true
+	state.Rules = []policy.Rule{{ID: "custom:id", Enabled: true, Kind: "exact", Value: "gpt-6.1-sol"}}
+	f.current.Store(policy.New(state, f.current.Load().CatalogCopy(), true))
+	e := decode(t, call(t, f.h, "POST", "/explain", map[string]any{"model": "models/GPT-6.1-SOL(high)"}), 200)
+	r := e["reason"].(map[string]any)
+	reasonShape(t, r)
+	if e["code"] != "rule_allowed" || r["code"] != "rule_allowed" || r["params"].(map[string]any)["rule_id"] != "custom:id" {
+		t.Fatal(e)
+	}
+	first := e["steps"].([]any)[0].(map[string]any)
+	if first["code"] != "normalized" || first["params"].(map[string]any)["model"] != "gpt-6.1-sol" {
+		t.Fatal(first)
+	}
+	c := decode(t, call(t, f.h, "GET", "/catalog", nil), 200)
+	reason := c["models"].([]any)[0].(map[string]any)["reason"].(map[string]any)
+	if reason["code"] != "rule_allowed" || reason["params"].(map[string]any)["rule_id"] != "custom:id" {
+		t.Fatal(reason)
+	}
+}
+
+func TestValidationContextAndNestedParams(t *testing.T) {
+	f := setup(t)
+	tests := []struct {
+		path                  string
+		body                  any
+		code, field, expected string
+	}{
+		{"/explain", map[string]any{}, "required_model", "model", ""},
+		{"/explain", map[string]any{"model": "x", "draft": []any{}}, "invalid_type", "draft", "object"},
+		{"/rules/preview", map[string]any{"aliases": []any{map[string]any{"enabled": "yes"}}}, "invalid_type", "aliases[0].enabled", "boolean"},
+		{"/rules/preview", map[string]any{"aliases": []any{map[string]any{"auto": map[string]any{"health_check": 1}}}}, "invalid_type", "aliases[0].auto.health_check", "boolean"},
+		{"/rules/preview", map[string]any{"settings": map[string]any{"refresh_interval_seconds": "bad"}}, "invalid_type", "settings.refresh_interval_seconds", "integer"},
+		{"/history/restore", map[string]any{"revision": 0, "scope": "state"}, "required_entry_id", "entry_id", ""},
+		{"/history/restore", map[string]any{"revision": 0, "entry_id": "x", "scope": "bad"}, "invalid_restore_scope", "scope", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.field+tt.code, func(t *testing.T) {
+			out := decode(t, call(t, f.h, "POST", tt.path, tt.body), 422)
+			rows := out["error"].(map[string]any)["details"].([]any)
+			found := false
+			for _, raw := range rows {
+				d := keys(t, raw, "path", "code", "params", "message")
+				p := d["params"].(map[string]any)
+				if d["path"] != p["field"] {
+					t.Fatal(d)
+				}
+				if d["code"] == tt.code && d["path"] == tt.field {
+					found = true
+					if tt.expected != "" && p["expected"] != tt.expected {
+						t.Fatal(d)
+					}
+				}
+			}
+			if !found {
+				t.Fatal(out)
+			}
+		})
+	}
+}
+
+func TestLegacyHistoryDerivesSpecificSummary(t *testing.T) {
+	f := setup(t)
+	before := policy.DefaultState()
+	after := policy.DefaultState()
+	after.Settings.WhitelistEnabled = true
+	f.h.config.History = func(int, string) any {
+		return []any{map[string]any{"id": "1", "actor": "user", "kind": "state", "summary": "Updated model policy", "before": before, "after": after}}
+	}
+	out := decode(t, call(t, f.h, "GET", "/history", nil), 200)
+	row := out["entries"].([]any)[0].(map[string]any)
+	reasonShape(t, row["summary_detail"])
+	if row["summary_detail"].(map[string]any)["code"] != "whitelist_enabled" || row["summary"] != "Enabled whitelist" {
+		t.Fatal(row)
+	}
 }

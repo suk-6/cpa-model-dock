@@ -108,19 +108,29 @@ func (h *Handler) overview(ctx context.Context, s *policy.Snapshot) any {
 	state, catalog := s.StateCopy(), s.CatalogCopy()
 	p := public(s)
 	mappings := []any{}
-	warnings := []string{
-		"Responses WebSocket continuation frames, Gemini model detail and management api-call are not intercepted; use reverse-proxy controls",
-		"Valid built-in API keys and realtime client secrets can bypass the nonexclusive frontend guard on stock CPA; restrict realtime/live at a reverse proxy",
-		"Plugin priority relative to other installed plugins must be verified on the host",
-	}
-	if !h.config.Guard {
-		warnings = append(warnings, "Realtime and live endpoint guard is disabled")
+	warnings := []any{reasonView("priority_unverified", "Verify plugin priority relative to other installed plugins on the host")}
+	if !catalog.OK {
+		warnings = append(warnings, reasonView("catalog_unavailable", "Could not refresh models; refresh again and check the provider connection"))
 	}
 	if !s.Available() {
-		warnings = append(warnings, "Policy is unavailable; model requests are denied")
+		warnings = append(warnings, reasonView("policy_unavailable", "Policy is unavailable; repair the saved settings to allow model requests"))
+	}
+	covered := []any{
+		reasonView("http_model_requests_covered", "Ordinary HTTP model requests, including streaming, are covered by model policy"),
+		reasonView("model_lists_covered", "Model list responses are filtered by model policy"),
+		reasonView("responses_websocket_initial_covered", "The initial Responses WebSocket request is covered by model policy"),
+	}
+	limitations := []any{
+		reasonView("realtime_proxy_required", "Realtime and live requests need reverse-proxy controls. Valid API keys and realtime client secrets can bypass this policy on standard CPA"),
+		reasonView("websocket_messages_proxy_required", "Ongoing WebSocket messages require reverse-proxy controls"),
+		reasonView("model_detail_proxy_required", "Single-model detail endpoints require reverse-proxy controls"),
+		reasonView("admin_api_tool_proxy_required", "The management API tool requires reverse-proxy controls"),
 	}
 	for _, alias := range state.Aliases {
 		if alias.Enabled {
+			if !s.Routable(alias.Target, alias.Provider) {
+				warnings = append(warnings, reasonView("alias_target_unavailable", "Alias "+alias.Name+" target "+alias.Target+" is unavailable; choose an available model", map[string]any{"alias_id": alias.ID, "alias": alias.Name, "target": alias.Target}))
+			}
 			mappings = append(mappings, map[string]any{"alias": alias.Name, "target": alias.Target})
 		}
 	}
@@ -142,8 +152,8 @@ func (h *Handler) overview(ctx context.Context, s *policy.Snapshot) any {
 		"policy_enabled": s.Available(), "whitelist_enabled": state.Settings.WhitelistEnabled,
 		"counts":          map[string]int{"public_models": len(p.PublicModels), "public_aliases": len(p.PublicAliases)},
 		"active_mappings": mappings, "recent_auto_updates": recent,
-		"catalog":  map[string]any{"last_refresh_at": catalog.RefreshedAt, "ok": catalog.OK, "error": nullableError(catalog.Error)},
-		"guard":    map[string]any{"enabled": h.config.Guard, "verified": false, "limitations": warnings[:2]},
+		"catalog":  map[string]any{"last_refresh_at": catalog.RefreshedAt, "ok": catalog.OK, "error": nullableError(catalog.Error), "error_detail": catalogError(catalog)},
+		"guard":    map[string]any{"enabled": h.config.Guard, "verified": false, "limitations": limitations, "covered": covered},
 		"warnings": warnings,
 	}
 }
@@ -158,7 +168,7 @@ func catalogView(s *policy.Snapshot, catalog policy.Catalog) any {
 			"routable": model.Routable, "public": model.Routable && d.Allowed, "reason": catalogReason(model, d),
 		})
 	}
-	return map[string]any{"refreshed_at": catalog.RefreshedAt, "ok": catalog.OK, "error": nullableError(catalog.Error), "models": models}
+	return map[string]any{"refreshed_at": catalog.RefreshedAt, "ok": catalog.OK, "error": nullableError(catalog.Error), "error_detail": catalogError(catalog), "models": models}
 }
 
 func (h *Handler) validate(body object) pluginapi.ManagementResponse {
@@ -174,7 +184,7 @@ func (h *Handler) validate(body object) pluginapi.ManagementResponse {
 	if len(details) == 0 {
 		preview = public(policy.New(state, s.CatalogCopy(), true))
 	}
-	return response(http.StatusOK, map[string]any{"valid": len(details) == 0, "details": details, "preview": preview})
+	return response(http.StatusOK, map[string]any{"valid": len(details) == 0, "details": detailViews(details), "preview": preview})
 }
 
 func (h *Handler) preview(body object) pluginapi.ManagementResponse {
@@ -219,13 +229,13 @@ func (h *Handler) explain(body object) pluginapi.ManagementResponse {
 	var model string
 	details := field(body, "model", &model)
 	if strings.TrimSpace(model) == "" {
-		details = append(details, detail("model", "required", "A model name is required"))
+		details = append(details, detail("model", "required_model", "A model name is required"))
 	}
 	s := h.snapshot()
 	if raw, ok := body["draft"]; ok {
 		draft, errs := decodeObject(raw)
 		if len(errs) != 0 {
-			details = append(details, detail("draft", "invalid_type", "Draft must be an object"))
+			details = append(details, detail("draft", "invalid_type", "Draft must be an object", map[string]any{"expected": "object"}))
 		} else {
 			state, errs := draftState(draft, s.StateCopy())
 			if len(errs) == 0 {
@@ -246,16 +256,20 @@ func (h *Handler) explain(body object) pluginapi.ManagementResponse {
 	d := s.Decide(model)
 	steps := []any{}
 	for _, code := range d.Steps {
-		message := code
-		if code == "normalized" {
+		message, params := d.Reason, map[string]any{}
+		switch code {
+		case "normalized":
 			message = "Matched as " + s.Normalize(model)
+			params["model"] = s.Normalize(model)
+		case "resolved_model":
+			message = "Evaluating resolved model " + s.Normalize(model)
+			params["model"] = s.Normalize(model)
+		default:
+			params = decisionParams(d)
 		}
-		if code == d.Code {
-			message = d.Reason
-		}
-		steps = append(steps, reasonView(code, message))
+		steps = append(steps, reasonView(code, message, params))
 	}
-	view := map[string]any{"allowed": d.Allowed, "status": d.Status, "code": d.Code, "reason": d.Reason, "steps": steps}
+	view := map[string]any{"allowed": d.Allowed, "status": d.Status, "code": d.Code, "reason": reasonView(d.Code, d.Reason, decisionParams(d)), "steps": steps}
 	if d.ResolvedTarget != "" {
 		view["resolved_target"] = d.ResolvedTarget
 	}
@@ -315,6 +329,11 @@ func historyEntries(value any) []any {
 	if entries == nil {
 		entries = []any{}
 	}
+	for _, entry := range entries {
+		if row, ok := entry.(map[string]any); ok {
+			historyDetail(row)
+		}
+	}
 	return entries
 }
 
@@ -358,8 +377,26 @@ func (h *Handler) history(req pluginapi.ManagementRequest) pluginapi.ManagementR
 	return response(http.StatusOK, map[string]any{"entries": entries, "next_before": next})
 }
 
-func reasonView(code, message string) map[string]any {
-	return map[string]any{"code": code, "message": message}
+func reasonView(code, message string, params ...map[string]any) map[string]any {
+	t := policy.NewText(code, message, params...)
+	return map[string]any{"code": t.Code, "params": t.Params, "message": t.Message}
+}
+func decisionParams(d policy.Decision) map[string]any {
+	p := map[string]any{}
+	if d.RuleID != "" {
+		p["rule_id"] = d.RuleID
+	}
+	if d.Alias != nil {
+		p["alias"] = d.Alias.Name
+		p["target"] = d.ResolvedTarget
+	}
+	return p
+}
+func catalogError(c policy.Catalog) any {
+	if c.OK {
+		return nil
+	}
+	return reasonView("catalog_unavailable", "Could not refresh models; previously available models are retained")
 }
 func nullableError(value string) any {
 	if value == "" {
@@ -369,18 +406,22 @@ func nullableError(value string) any {
 }
 func catalogReason(model policy.Model, d policy.Decision) any {
 	if !model.Routable {
-		return reasonView("not_routable", "No enabled credential advertises this model")
+		return reasonView("not_routable", "No connected provider offers this model")
 	}
-	return reasonView(d.Code, d.Reason)
+	return reasonView(d.Code, d.Reason, decisionParams(d))
 }
 
 // statusView is the wire boundary: internal evaluator structs are never exposed.
 func statusView(value map[string]any) map[string]any {
 	code, _ := value["reason"].(string)
 	message, _ := value["message"].(string)
+	params := map[string]any{}
 	if reason, ok := value["reason"].(map[string]any); ok {
 		code, _ = reason["code"].(string)
 		message, _ = reason["message"].(string)
+		if p, ok := reason["params"].(map[string]any); ok {
+			params = p
+		}
 	}
 	switch code {
 	case "newer_candidate":
@@ -392,6 +433,10 @@ func statusView(value map[string]any) map[string]any {
 	}
 	if code == "" {
 		code = "not_checked"
+	}
+	if code == "newer_version" {
+		params["from"] = value["previous_target"]
+		params["to"] = value["current_target"]
 	}
 	if message == "" {
 		message = code
@@ -408,6 +453,9 @@ func statusView(value map[string]any) map[string]any {
 		for _, row := range rows {
 			if candidate, ok := row.(map[string]any); ok {
 				code, _ := candidate["reason"].(string)
+				if r, ok := candidate["reason"].(map[string]any); ok {
+					code, _ = r["code"].(string)
+				}
 				if code == "prerelease_excluded" {
 					continue
 				}
@@ -423,11 +471,11 @@ func statusView(value map[string]any) map[string]any {
 				if candidate["chosen"] == true {
 					code = "selected"
 				}
-				candidates = append(candidates, map[string]any{"id": candidate["id"], "version": candidate["version"], "routable": candidate["routable"], "chosen": candidate["chosen"], "reason": reasonView(code, code)})
+				candidates = append(candidates, map[string]any{"id": candidate["id"], "version": candidate["version"], "routable": candidate["routable"], "chosen": candidate["chosen"], "reason": reasonView(code, candidateMessage(code))})
 			}
 		}
 	}
-	return map[string]any{"current_target": value["current_target"], "candidates": candidates, "last_checked_at": value["last_checked_at"], "last_result": result, "reason": reasonView(code, message), "target_routable": value["target_routable"]}
+	return map[string]any{"current_target": value["current_target"], "candidates": candidates, "last_checked_at": value["last_checked_at"], "last_result": result, "reason": reasonView(code, message, params), "target_routable": value["target_routable"]}
 }
 
 func ruleMatch(s *policy.Snapshot, rule policy.Rule, model policy.Model) bool {
@@ -460,4 +508,19 @@ func ruleMatch(s *policy.Snapshot, rule policy.Rule, model policy.Model) bool {
 	state.Settings.WhitelistEnabled = true
 	state.Rules = []policy.Rule{rule}
 	return policy.New(state, s.CatalogCopy(), true).Decide(model.ID).Allowed
+}
+
+func candidateMessage(code string) string {
+	switch code {
+	case "candidate":
+		return "Eligible family candidate"
+	case "selected":
+		return "Selected as the newer available model"
+	case "not_routable":
+		return "The required provider does not offer this model"
+	case "alias_conflict":
+		return "Candidate conflicts with a configured alias name"
+	default:
+		return "Candidate is unavailable"
+	}
 }

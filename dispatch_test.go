@@ -74,7 +74,7 @@ func TestJSONEnvelopeDispatchManagementAndHooks(t *testing.T) {
 		Resources []struct{ Path, Menu string }   `json:"resources"`
 	}
 	rpc(t, r, "management.register", pluginapi.ManagementRegistrationRequest{BasePath: "/v0/management", ResourceBasePath: "/v0/resource/plugins/cpa-model-dock"}, &registration)
-	if len(registration.Routes) != 11 || len(registration.Resources) != 4 {
+	if len(registration.Routes) != 11 || len(registration.Resources) != 5 {
 		t.Fatal(registration)
 	}
 	state := policy.DefaultState()

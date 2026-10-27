@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -18,7 +20,7 @@ const maxBody = 1 << 20
 
 func decodeObject(body []byte) (object, []policy.Detail) {
 	if len(body) > maxBody {
-		return nil, []policy.Detail{detail("body", "body_too_large", "Management request is too large")}
+		return nil, []policy.Detail{detail("body", "body_too_large", "Management request is too large", map[string]any{"max_bytes": maxBody})}
 	}
 	var obj object
 	if len(bytes.TrimSpace(body)) == 0 {
@@ -36,7 +38,7 @@ func field(obj object, name string, out any) []policy.Detail {
 		return nil
 	}
 	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, out) != nil {
-		return []policy.Detail{detail(name, "invalid_type", "Invalid field value")}
+		return []policy.Detail{detail(name, "invalid_type", "Invalid field value", map[string]any{"expected": expectedType(out)})}
 	}
 	// encoding/json accepts null for scalar Go fields. Reject it explicitly so a
 	// malformed draft cannot silently turn a security setting into its zero value.
@@ -50,10 +52,10 @@ func field(obj object, name string, out any) []policy.Detail {
 			if strings.HasPrefix(path, "aliases[") && strings.HasSuffix(path, "].rewrite_response_model") {
 				return // This override is explicitly nullable in the contract.
 			}
-			details = append(details, detail(path, "invalid_type", "Field must not be null"))
+			details = append(details, detail(path, "invalid_type", "Field must not be null", map[string]any{"expected": "non_null"}))
 		case map[string]any:
-			for key, child := range value {
-				walk(child, path+"."+key)
+			for _, key := range fieldNames(value) {
+				walk(value[key], path+"."+key)
 			}
 		case []any:
 			for i, child := range value {
@@ -69,7 +71,7 @@ func revision(headers http.Header, obj object) (int64, []policy.Detail) {
 	var bodyRevision, headerRevision int64
 	raw, hasBody := obj["revision"]
 	if hasBody && (bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &bodyRevision) != nil || bodyRevision < 0) {
-		return 0, []policy.Detail{detail("revision", "invalid_revision", "Revision must be a nonnegative integer")}
+		return 0, []policy.Detail{detail("revision", "invalid_revision_body", "Revision must be a nonnegative integer")}
 	}
 	var matches []string
 	for name, values := range headers {
@@ -91,14 +93,14 @@ func revision(headers http.Header, obj object) (int64, []policy.Detail) {
 		var err error
 		headerRevision, err = strconv.ParseInt(value, 10, 64)
 		if !valid || err != nil {
-			return 0, []policy.Detail{detail("revision", "invalid_revision", "If-Match must contain one revision")}
+			return 0, []policy.Detail{detail("revision", "invalid_revision_header", "If-Match must contain one revision")}
 		}
 	}
 	if !hasBody && !hasHeader {
-		return 0, []policy.Detail{detail("revision", "required", "A revision or If-Match header is required")}
+		return 0, []policy.Detail{detail("revision", "required_revision", "A revision or If-Match header is required")}
 	}
 	if hasBody && hasHeader && bodyRevision != headerRevision {
-		return 0, []policy.Detail{detail("revision", "invalid_revision", "Revision and If-Match disagree")}
+		return 0, []policy.Detail{detail("revision", "revision_disagreement", "Revision and If-Match disagree")}
 	}
 	if hasBody {
 		return bodyRevision, nil
@@ -110,7 +112,7 @@ func fullState(obj object, current policy.State) (policy.State, []policy.Detail)
 	var details []policy.Detail
 	for _, key := range []string{"settings", "families", "aliases", "rules"} {
 		if _, ok := obj[key]; !ok {
-			details = append(details, detail(key, "required", "Field is required for a full state replacement"))
+			details = append(details, detail(key, "required_full_state_field", "Field is required for a full state replacement"))
 		}
 	}
 	if raw, ok := obj["settings"]; ok {
@@ -118,7 +120,7 @@ func fullState(obj object, current policy.State) (policy.State, []policy.Detail)
 		if json.Unmarshal(raw, &settings) == nil && settings != nil {
 			for _, name := range []string{"whitelist_enabled", "rewrite_response_model", "refresh_interval_seconds"} {
 				if _, ok := settings[name]; !ok {
-					details = append(details, detail("settings."+name, "required", "Setting is required"))
+					details = append(details, detail("settings."+name, "required_setting", "Setting is required"))
 				}
 			}
 		}
@@ -138,10 +140,12 @@ func draftState(obj object, saved policy.State) (policy.State, []policy.Detail) 
 	if raw, ok := obj["settings"]; ok {
 		var settings object
 		if json.Unmarshal(raw, &settings) != nil || settings == nil {
-			details = append(details, detail("settings", "invalid_type", "Settings must be an object"))
+			details = append(details, detail("settings", "invalid_type", "Settings must be an object", map[string]any{"expected": "object"}))
 		} else {
-			for name, target := range map[string]any{"whitelist_enabled": &saved.Settings.WhitelistEnabled,
-				"rewrite_response_model": &saved.Settings.RewriteResponseModel, "refresh_interval_seconds": &saved.Settings.RefreshIntervalSeconds} {
+			settingsFields := map[string]any{"whitelist_enabled": &saved.Settings.WhitelistEnabled,
+				"rewrite_response_model": &saved.Settings.RewriteResponseModel, "refresh_interval_seconds": &saved.Settings.RefreshIntervalSeconds}
+			for _, name := range fieldNames(settingsFields) {
+				target := settingsFields[name]
 				for _, d := range field(settings, name, target) {
 					d.Path = "settings." + d.Path
 					details = append(details, d)
@@ -156,7 +160,7 @@ func draftState(obj object, saved policy.State) (policy.State, []policy.Detail) 
 		}
 		var entries []object
 		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &entries) != nil {
-			details = append(details, detail(section, "invalid_type", "Expected an array of objects"))
+			details = append(details, detail(section, "invalid_type", "Expected an array of objects", map[string]any{"expected": "array_of_objects"}))
 			continue
 		}
 		switch section {
@@ -170,7 +174,7 @@ func draftState(obj object, saved policy.State) (policy.State, []policy.Detail) 
 		for i, entry := range entries {
 			path := section + "[" + strconv.Itoa(i) + "]"
 			if entry == nil {
-				details = append(details, detail(path, "invalid_type", "Expected an object"))
+				details = append(details, detail(path, "invalid_type", "Expected an object", map[string]any{"expected": "object"}))
 				continue
 			}
 			f, a, r := policy.Family{AllowDated: true}, policy.Alias{Enabled: true}, policy.Rule{Enabled: true}
@@ -183,7 +187,8 @@ func draftState(obj object, saved policy.State) (policy.State, []policy.Detail) 
 			case "rules":
 				fields = map[string]any{"id": &r.ID, "enabled": &r.Enabled, "kind": &r.Kind, "value": &r.Value, "note": &r.Note}
 			}
-			for name, target := range fields {
+			for _, name := range fieldNames(fields) {
+				target := fields[name]
 				if name == "rewrite_response_model" && bytes.Equal(bytes.TrimSpace(entry[name]), []byte("null")) {
 					continue
 				}
@@ -196,9 +201,11 @@ func draftState(obj object, saved policy.State) (policy.State, []policy.Detail) 
 				if raw, ok := entry["auto"]; ok {
 					var auto object
 					if json.Unmarshal(raw, &auto) != nil || auto == nil {
-						details = append(details, detail(path+".auto", "invalid_type", "Expected an object"))
+						details = append(details, detail(path+".auto", "invalid_type", "Expected an object", map[string]any{"expected": "object"}))
 					} else {
-						for name, target := range map[string]any{"family": &a.Auto.Family, "include_prerelease": &a.Auto.IncludePrerelease, "health_check": &a.Auto.HealthCheck} {
+						autoFields := map[string]any{"family": &a.Auto.Family, "include_prerelease": &a.Auto.IncludePrerelease, "health_check": &a.Auto.HealthCheck}
+						for _, name := range fieldNames(autoFields) {
+							target := autoFields[name]
 							for _, d := range field(auto, name, target) {
 								d.Path = path + ".auto." + d.Path
 								details = append(details, d)
@@ -231,10 +238,10 @@ func ValidateState(state policy.State, catalog policy.Catalog) []policy.Detail {
 	}
 	for i, a := range state.Aliases {
 		if strings.Contains(a.Name, "/") {
-			details = append(details, detail(fmt.Sprintf("aliases[%d].name", i), "invalid_alias_name", "Alias names cannot contain a slash"))
+			details = append(details, detail(fmt.Sprintf("aliases[%d].name", i), "invalid_alias_slash", "Alias names cannot contain a slash"))
 		}
 	}
-	return details
+	return detailViews(details)
 }
 
 func assignIDs(state *policy.State) []policy.Detail {
@@ -263,4 +270,43 @@ func assignIDs(state *policy.State) []policy.Detail {
 		assign(&state.Rules[i].ID, "rules", "r_", i)
 	}
 	return details
+}
+
+func fieldNames[T any](fields map[string]T) []string {
+	keys := make([]string, 0, len(fields))
+	for key := range fields {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+func expectedType(out any) string {
+	t := reflect.TypeOf(out)
+	if t == nil {
+		return "non_null"
+	}
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	switch t.Kind() {
+	case reflect.String:
+		return "string"
+	case reflect.Bool:
+		return "boolean"
+	case reflect.Int, reflect.Int64:
+		return "integer"
+	case reflect.Struct, reflect.Map:
+		return "object"
+	default:
+		return "array_of_objects"
+	}
+}
+
+// detailViews also updates field params after input paths acquire their parents.
+func detailViews(details []policy.Detail) []policy.Detail {
+	out := make([]policy.Detail, 0, len(details))
+	for _, d := range details {
+		out = append(out, policy.NewDetail(d.Path, d.Code, d.Message, d.Params))
+	}
+	return out
 }

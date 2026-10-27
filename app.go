@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -167,7 +168,7 @@ func (a *application) restore(expected int64, id, scope string) (policy.State, e
 				}
 			}
 			if !present {
-				return policy.State{}, validationFailure{[]policy.Detail{{Path: "entry_id", Code: "alias_not_found", Message: "Historical alias no longer exists"}}}
+				return policy.State{}, validationFailure{[]policy.Detail{policy.NewDetail("entry_id", "alias_not_found", "Historical alias no longer exists")}}
 			}
 		}
 		if !matched {
@@ -420,20 +421,23 @@ func (a *application) refreshRevision(ctx context.Context, _ int64) (policy.Cata
 func (a *application) managementHistory(limit int, before string) any {
 	rows := []any{}
 	for _, entry := range a.store.History(store.HistoryLimit, "") {
-		row := func(id string, old, next any) any {
-			return map[string]any{"id": id, "at": entry.At, "actor": entry.Actor, "kind": entry.Kind, "summary": entry.Summary, "before": old, "after": next}
+		row := func(id string, old, next any, detail policy.Text) any {
+			return map[string]any{"id": id, "at": entry.At, "actor": entry.Actor, "kind": entry.Kind, "summary": detail.Message, "summary_detail": detail, "before": old, "after": next}
 		}
 		if entry.Kind == "state" {
-			rows = append(rows, row(entry.ID, entry.Before, entry.After))
+			rows = append(rows, row(entry.ID, entry.Before, entry.After, policy.HistorySummary(entry.Before, entry.After, entry.Actor, entry.Summary)))
 			continue
 		}
-		old := map[string]string{}
+		old := map[string]policy.Alias{}
 		for _, alias := range entry.Before.Aliases {
-			old[alias.ID] = alias.Target
+			old[alias.ID] = alias
 		}
-		for _, alias := range entry.After.Aliases {
-			if target, exists := old[alias.ID]; exists && target != alias.Target {
-				rows = append(rows, row(entry.ID+":"+alias.ID, map[string]any{"alias_id": alias.ID, "target": target}, map[string]any{"alias_id": alias.ID, "target": alias.Target}))
+		aliases := append([]policy.Alias{}, entry.After.Aliases...)
+		sort.Slice(aliases, func(i, j int) bool { return aliases[i].ID < aliases[j].ID })
+		for _, alias := range aliases {
+			if previous, exists := old[alias.ID]; exists && previous.Target != alias.Target {
+				detail := policy.HistorySummary(policy.State{Aliases: []policy.Alias{previous}}, policy.State{Aliases: []policy.Alias{alias}}, entry.Actor, entry.Summary)
+				rows = append(rows, row(entry.ID+":"+alias.ID, map[string]any{"alias_id": alias.ID, "target": previous.Target}, map[string]any{"alias_id": alias.ID, "target": alias.Target}, detail))
 			}
 		}
 	}

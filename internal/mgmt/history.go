@@ -1,0 +1,46 @@
+package mgmt
+
+import (
+	"encoding/json"
+	"fmt"
+	"github.com/cpa-model-dock/cpa-model-dock/internal/policy"
+)
+
+// historyDetail supports legacy callback rows without persisted structured text.
+func historyDetail(row map[string]any) {
+	if detail, ok := row["summary_detail"].(map[string]any); ok && detail["code"] != "" {
+		if detail["params"] == nil {
+			detail["params"] = map[string]any{}
+		}
+		return
+	}
+	summary, _ := row["summary"].(string)
+	actor, _ := row["actor"].(string)
+	old, oldOK := row["before"].(map[string]any)
+	next, nextOK := row["after"].(map[string]any)
+	var detail policy.Text
+	if oldOK && nextOK {
+		if id, ok := next["alias_id"].(string); ok {
+			from, _ := old["target"].(string)
+			to, _ := next["target"].(string)
+			before := policy.State{Aliases: []policy.Alias{{ID: id, Name: id, Target: from}}}
+			after := policy.State{Aliases: []policy.Alias{{ID: id, Name: id, Target: to}}}
+			detail = policy.HistorySummary(before, after, actor, summary)
+		} else {
+			var before, after policy.State
+			b, e1 := json.Marshal(old)
+			a, e2 := json.Marshal(next)
+			if e1 == nil && e2 == nil && json.Unmarshal(b, &before) == nil && json.Unmarshal(a, &after) == nil {
+				detail = policy.HistorySummary(before, after, actor, summary)
+			}
+		}
+	}
+	if detail.Code == "" {
+		if summary == "" {
+			summary = fmt.Sprintf("History entry %v", row["id"])
+		}
+		detail = policy.NewText("history_legacy", summary, map[string]any{"summary": summary})
+	}
+	row["summary_detail"] = detail
+	row["summary"] = detail.Message
+}

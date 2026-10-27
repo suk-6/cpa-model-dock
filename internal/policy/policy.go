@@ -216,7 +216,9 @@ func (s *Snapshot) decideResolved(n string, steps []string) Decision {
 	}
 	for _, r := range s.state.Rules {
 		if s.matchRuleNormalized(r, n) {
-			return decision(true, 200, "rule:"+r.ID, "Model matches an allow rule.", steps)
+			d := decision(true, 200, "rule_allowed", "Model matches an allow rule.", steps)
+			d.RuleID = r.ID
+			return d
 		}
 	}
 	return decision(false, 403, "not_whitelisted", "Model is not allowed.", steps)

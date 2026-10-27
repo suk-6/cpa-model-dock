@@ -17,7 +17,7 @@ func Validate(s State, c Catalog) []Detail {
 
 func validate(s State, c Catalog, checkCatalog bool) []Detail {
 	out := []Detail{}
-	add := func(path, code, msg string) { out = append(out, Detail{Path: path, Code: code, Message: msg}) }
+	add := func(path, code, msg string) { out = append(out, NewDetail(path, code, msg)) }
 	if s.Schema != 1 {
 		add("schema", "unsupported_schema", "Schema must be 1.")
 	}
@@ -30,7 +30,7 @@ func validate(s State, c Catalog, checkCatalog bool) []Detail {
 	ids := map[string]bool{}
 	checkID := func(id, path string) {
 		if strings.TrimSpace(id) == "" {
-			add(path, "required", "ID is required.")
+			add(path, "required_id", "ID is required.")
 			return
 		}
 		if strings.TrimSpace(id) != id || hasControl(id) {
@@ -55,10 +55,17 @@ func validate(s State, c Catalog, checkCatalog bool) []Detail {
 			add(p+".id", "family_conflict", "Family ID already exists.")
 		}
 		if strings.TrimSpace(f.Name) == "" {
-			add(p+".name", "required", "Family name is required.")
+			add(p+".name", "required_family_name", "Family name is required.")
 		}
 		if _, err := version.Compile(f.Template, f.AllowDated); err != nil {
-			add(p+".template", "invalid_template", err.Error())
+			code := "invalid_template_expression"
+			switch err.Error() {
+			case "template requires exactly one {version} and at most one {date}":
+				code = "invalid_template_tokens"
+			case "invalid template literal or adjacent tokens":
+				code = "invalid_template_literal"
+			}
+			add(p+".template", code, err.Error())
 		}
 		if strings.TrimSpace(f.Provider) != f.Provider || hasControl(f.Provider) {
 			add(p+".provider", "invalid_provider", "Provider contains invalid whitespace or control characters.")
@@ -75,22 +82,22 @@ func validate(s State, c Catalog, checkCatalog bool) []Detail {
 		checkID(a.ID, p+".id")
 		n := normalize(a.Name, c.Prefixes)
 		if strings.TrimSpace(a.Name) == "" {
-			add(p+".name", "required", "Alias name is required.")
+			add(p+".name", "required_alias_name", "Alias name is required.")
 		} else if n != strings.ToLower(a.Name) || strings.IndexFunc(a.Name, unicode.IsSpace) >= 0 || strings.ContainsAny(a.Name, "()*?\\") || hasControl(a.Name) {
 			add(p+".name", "invalid_alias_name", "Alias name must be a canonical model name without whitespace, wildcards, or thinking suffixes.")
 		}
 		if _, exists := names[n]; exists {
-			add(p+".name", "alias_conflict", "Alias names must be unique ignoring case.")
+			add(p+".name", "alias_name_conflict", "Alias names must be unique ignoring case.")
 		}
 		names[n] = i
 		if checkCatalog && catalogNames[n] {
-			add(p+".name", "alias_conflict", "Alias name conflicts with a catalog model.")
+			add(p+".name", "alias_catalog_conflict", "Alias name conflicts with a catalog model.")
 		}
 		if a.Mode != "pinned" && a.Mode != "auto" {
 			add(p+".mode", "invalid_mode", "Alias mode must be pinned or auto.")
 		}
 		if strings.TrimSpace(a.Target) == "" {
-			add(p+".target", "required", "Alias target is required.")
+			add(p+".target", "required_alias_target", "Alias target is required.")
 		} else if strings.TrimSpace(a.Target) != a.Target || strings.IndexFunc(a.Target, unicode.IsSpace) >= 0 || strings.ContainsAny(a.Target, "()*?\\") || hasControl(a.Target) {
 			add(p+".target", "invalid_target", "Target must be a model ID without whitespace, wildcards, or thinking suffixes.")
 		}
@@ -118,7 +125,7 @@ func validate(s State, c Catalog, checkCatalog bool) []Detail {
 		p := fmt.Sprintf("rules[%d]", i)
 		checkID(r.ID, p+".id")
 		if strings.TrimSpace(r.Value) == "" {
-			add(p+".value", "required", "Rule value is required.")
+			add(p+".value", "required_rule_value", "Rule value is required.")
 		}
 		if hasControl(r.Value) {
 			add(p+".value", "invalid_value", "Rule value contains control characters.")

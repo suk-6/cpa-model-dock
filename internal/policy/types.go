@@ -64,9 +64,10 @@ type Catalog struct {
 	Error       string    `json:"error,omitempty"`
 }
 type Detail struct {
-	Path    string `json:"path"`
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Path    string         `json:"path"`
+	Code    string         `json:"code"`
+	Params  map[string]any `json:"params"`
+	Message string         `json:"message"`
 }
 type Decision struct {
 	Allowed        bool     `json:"allowed"`
@@ -74,6 +75,7 @@ type Decision struct {
 	Code           string   `json:"code"`
 	Reason         string   `json:"reason"`
 	Steps          []string `json:"steps"`
+	RuleID         string   `json:"rule_id,omitempty"`
 	ResolvedTarget string   `json:"resolved_target,omitempty"`
 	Provider       string   `json:"provider,omitempty"`
 	Alias          *Alias   `json:"-"`

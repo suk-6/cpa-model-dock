@@ -32,13 +32,14 @@ var (
 )
 
 type Entry struct {
-	ID      string       `json:"id"`
-	At      time.Time    `json:"at"`
-	Actor   string       `json:"actor"`
-	Kind    string       `json:"kind"`
-	Summary string       `json:"summary"`
-	Before  policy.State `json:"before"`
-	After   policy.State `json:"after"`
+	ID            string       `json:"id"`
+	At            time.Time    `json:"at"`
+	Actor         string       `json:"actor"`
+	Kind          string       `json:"kind"`
+	Summary       string       `json:"summary"`
+	SummaryDetail *policy.Text `json:"summary_detail,omitempty"`
+	Before        policy.State `json:"before"`
+	After         policy.State `json:"after"`
 }
 
 type syncCloser interface {
@@ -124,6 +125,8 @@ func (s *Store) save(expected int64, state policy.State, actor, kind, summary st
 		return clone(s.state), ErrInvalidState
 	}
 	entry := Entry{ID: strconv.FormatInt(next.Revision, 10), At: next.UpdatedAt, Actor: actor, Kind: kind, Summary: summary, Before: clone(s.state), After: next}
+	summaryDetail := policy.HistorySummary(entry.Before, entry.After, actor, summary)
+	entry.SummaryDetail = &summaryDetail
 	record, err := json.Marshal(entry)
 	if err != nil {
 		return clone(s.state), err
@@ -192,6 +195,12 @@ func (s *Store) History(limit int, before string) []Entry {
 		entry := s.history[i]
 		entry.Before = clone(entry.Before)
 		entry.After = clone(entry.After)
+		if entry.SummaryDetail != nil {
+			b, _ := json.Marshal(entry.SummaryDetail)
+			var d policy.Text
+			_ = json.Unmarshal(b, &d)
+			entry.SummaryDetail = &d
+		}
 		result = append(result, entry)
 	}
 	return result

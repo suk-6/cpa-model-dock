@@ -23,10 +23,11 @@ const (
 )
 
 var assets = map[string]string{
-	"/index.html": "text/html; charset=utf-8",
-	"/app.js":     "text/javascript; charset=utf-8",
-	"/i18n.js":    "text/javascript; charset=utf-8",
-	"/app.css":    "text/css; charset=utf-8",
+	"/index.html":  "text/html; charset=utf-8",
+	"/app.js":      "text/javascript; charset=utf-8",
+	"/i18n.js":     "text/javascript; charset=utf-8",
+	"/favicon.svg": "image/svg+xml",
+	"/app.css":     "text/css; charset=utf-8",
 }
 
 // Config connects management to the owner's atomic snapshot and persistence layer.
@@ -92,11 +93,11 @@ func (h *Handler) Register(req pluginapi.ManagementRegistrationRequest) any {
 	registration := struct {
 		Routes    []route    `json:"routes"`
 		Resources []resource `json:"resources"`
-	}{Routes: make([]route, 0, len(routes)), Resources: make([]resource, 0, 4)}
+	}{Routes: make([]route, 0, len(routes)), Resources: make([]resource, 0, 5)}
 	for _, r := range routes {
 		registration.Routes = append(registration.Routes, route{r.Method, base + r.Path})
 	}
-	for _, name := range []string{"index.html", "app.js", "app.css", "i18n.js"} {
+	for _, name := range []string{"index.html", "app.js", "app.css", "i18n.js", "favicon.svg"} {
 		r := resource{Path: resources + "/" + name}
 		if name == "index.html" {
 			r.Menu, r.Description = "Model Dock", "Manage model aliases and whitelist"
@@ -167,9 +168,9 @@ func (h *Handler) dispatch(ctx context.Context, path string, req pluginapi.Manag
 	body, details := decodeObject(req.Body)
 	if len(details) != 0 {
 		if details[0].Code == "body_too_large" {
-			return failure(413, "body_too_large", details[0].Message)
+			return failure(413, "body_too_large", details[0].Message, details[0].Params)
 		}
-		return failure(400, "invalid_json", details[0].Message)
+		return failure(400, "invalid_json", details[0].Message, details[0].Params)
 	}
 	switch path {
 	case "/validate":
@@ -235,10 +236,10 @@ func (h *Handler) dispatch(ctx context.Context, path string, req pluginapi.Manag
 		var entryID, scope string
 		details = append(field(body, "entry_id", &entryID), field(body, "scope", &scope)...)
 		if strings.TrimSpace(entryID) == "" {
-			details = append(details, detail("entry_id", "required", "A history entry is required"))
+			details = append(details, detail("entry_id", "required_entry_id", "A history entry is required"))
 		}
 		if scope != "state" && scope != "alias_target" {
-			details = append(details, detail("scope", "invalid_scope", "Scope must be state or alias_target"))
+			details = append(details, detail("scope", "invalid_restore_scope", "Scope must be state or alias_target"))
 		}
 		if len(details) != 0 {
 			return invalid(details)
@@ -270,7 +271,7 @@ func (h *Handler) callbackError(err error) pluginapi.ManagementResponse {
 	case errors.Is(err, store.ErrEntryNotFound):
 		return failure(http.StatusNotFound, "entry_not_found", "History entry not found")
 	case errors.Is(err, store.ErrInvalidScope):
-		return invalid([]policy.Detail{detail("scope", "invalid_scope", "Scope cannot be restored from this entry")})
+		return invalid([]policy.Detail{detail("scope", "restore_scope_mismatch", "Scope cannot be restored from this entry")})
 	case errors.Is(err, store.ErrUnavailable):
 		return unavailable()
 	case errors.Is(err, store.ErrInvalidState):
@@ -282,7 +283,7 @@ func (h *Handler) callbackError(err error) pluginapi.ManagementResponse {
 
 func (h *Handler) conflict() pluginapi.ManagementResponse {
 	return response(http.StatusConflict, map[string]any{
-		"error": map[string]any{"code": "revision_conflict", "message": "Policy revision has changed"},
+		"error": map[string]any{"code": "revision_conflict", "params": map[string]any{}, "message": "Policy revision has changed"},
 		"state": h.stateView(context.Background(), h.snapshot()),
 	})
 }
@@ -317,30 +318,28 @@ func resourceResponse(req pluginapi.ManagementRequest) pluginapi.ManagementRespo
 func response(status int, value any) pluginapi.ManagementResponse {
 	body, err := json.Marshal(value)
 	if err != nil {
-		status, body = http.StatusInternalServerError, []byte(`{"error":{"code":"encoding_failed","message":"Management response unavailable"}}`)
+		status, body = http.StatusInternalServerError, []byte(`{"error":{"code":"encoding_failed","params":{},"message":"Management response unavailable"}}`)
 	}
 	return pluginapi.ManagementResponse{StatusCode: status, Body: body, Headers: http.Header{
 		"Content-Type": {"application/json; charset=utf-8"}, "Cache-Control": {"no-cache"}, "X-Content-Type-Options": {"nosniff"},
 	}}
 }
 
-func failure(status int, code, message string) pluginapi.ManagementResponse {
-	return response(status, map[string]any{"error": map[string]any{"code": code, "message": message}})
+func failure(status int, code, message string, params ...map[string]any) pluginapi.ManagementResponse {
+	return response(status, map[string]any{"error": reasonView(code, message, params...)})
 }
 
 func unavailable() pluginapi.ManagementResponse {
 	return failure(http.StatusServiceUnavailable, "policy_unavailable", "Management dependency unavailable")
 }
 
-func detail(path, code, message string) policy.Detail {
-	return policy.Detail{Path: path, Code: code, Message: message}
+func detail(path, code, message string, params ...map[string]any) policy.Detail {
+	return policy.NewDetail(path, code, message, params...)
 }
 
 func invalid(details []policy.Detail) pluginapi.ManagementResponse {
-	if details == nil {
-		details = []policy.Detail{}
-	}
+	details = detailViews(details)
 	return response(http.StatusUnprocessableEntity, map[string]any{"error": map[string]any{
-		"code": "validation_failed", "message": "Policy validation failed", "details": details,
+		"code": "validation_failed", "params": map[string]any{}, "message": "Policy validation failed", "details": details,
 	}})
 }
