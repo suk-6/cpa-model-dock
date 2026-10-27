@@ -114,3 +114,14 @@ test('alias rename and removal preserve rule integrity without widening other ru
   assert.equal(rules[0].value,'GPT-SOL');
   assert.deepEqual(reconcileAliasRules(rules,'gpt-sol'),rules.slice(1));
 });
+
+test('family examples never absorb calendar dates into numeric versions', () => {
+  const ids = ['claude-opus-4-5', 'claude-opus-4-5-20251101', 'claude-opus-4-5-2025-11-01',
+    'claude-opus-4-5-20251301', 'claude-opus-4-5-251101', 'claude-opus-4-5-1101',
+    'claude-opus-4.5.20251101', 'claude-opus-4-20251101-5', 'claude-opus-999999999999999999999'];
+  const models = ids.map(id => ({id}));
+  const family = {template:'claude-opus-{version}',allow_dated:false};
+  assert.deepEqual(familyExamples(family,models).map(m => m.id),[ids[0],ids[8]]);
+  assert.deepEqual(familyExamples({...family,allow_dated:true},models).map(m => m.id),[ids[0],ids[1],ids[2],ids[8]]);
+  assert.deepEqual(familyExamples({template:'claude-opus-{version}-{date}',allow_dated:false},[models[4]]),[models[4]]);
+});

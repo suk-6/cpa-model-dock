@@ -59,20 +59,41 @@ export function diffJSON(before, after) {
 export function escapeHTML(value) {
   return String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 }
-export function familyExamples(family, models) {
-  if (!family.template?.includes('{version}') || family.template.length > 200) return [];
-  const marker = /\{version\}|\{date\}/g;
-  let source = '', end = 0;
+// Keep browser examples and the mock's family policy checks on the same parser.
+export function parseFamilyName(id, family, includePrerelease = false) {
+  const template = family.template;
+  if (typeof template !== 'string' || template.length > 200 || template.split('{version}').length !== 2 || template.split('{date}').length > 2) return null;
+  let name = String(id).trim(), prerelease = false;
+  const marker = name.match(/-(preview|beta|alpha|experimental|exp|rc|nightly|dev|test)(?:[.-]?\d+)?$/i);
+  if (marker) { prerelease = true; name = name.slice(0, marker.index); }
+  if (prerelease && !includePrerelease) return null;
+  const datePattern = '\\d{4}-\\d{2}-\\d{2}|\\d{8}|\\d{6}|\\d{4}';
   const literal = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  for (const token of family.template.matchAll(marker)) {
-    source += literal(family.template.slice(end, token.index));
-    source += token[0] === '{version}' ? '\\d+(?:[.-]\\d+)*' : '(?:\\d{8}|\\d{4}-\\d{2}-\\d{2})';
-    end = token.index + token[0].length;
+  const source = template.split(/(\{version\}|\{date\})/).map(part =>
+    part === '{version}' ? '(?<version>\\d+(?:[.-]\\d+)*)' :
+      part === '{date}' ? `(?<date>${datePattern})` : literal(part)).join('');
+  let match;
+  if (!template.includes('{date}')) {
+    match = new RegExp(`^${source}-(?<date>${datePattern})$`, 'i').exec(name);
+    if (match && (!family.allow_dated || (match.groups.date.replaceAll('-', '').length < 8 && template.endsWith('{version}')))) return null;
   }
-  source += literal(family.template.slice(end));
-  if (family.allow_dated && !family.template.includes('{date}')) source += '(?:-(?:\\d{8}|\\d{4}-\\d{2}-\\d{2}))?';
-  const regex = new RegExp(`^${source}$`, 'i');
-  return models.filter(model => regex.test(model.id) && (!family.provider || model.providers?.includes(family.provider)));
+  match ??= new RegExp(`^${source}$`, 'i').exec(name);
+  if (!match) return null;
+  const validDate = raw => {
+    const compact = raw.replaceAll('-', '');
+    const expanded = compact.length === 6 ? `20${compact}` : compact.length === 4 ? `2000${compact}` : compact;
+    if (!/^\d{8}$/.test(expanded)) return false;
+    const year = +expanded.slice(0, 4), month = +expanded.slice(4, 6), day = +expanded.slice(6);
+    const date = new Date(0);
+    date.setUTCFullYear(year, month - 1, day);
+    return year > 0 && date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+  };
+  if (match.groups.date && !validDate(match.groups.date)) return null;
+  if (match.groups.version.split(/[.-]/).some(part => part.length === 8 && validDate(part))) return null;
+  return { version: match.groups.version, date: match.groups.date?.replaceAll('-', '') ?? null, prerelease };
+}
+export function familyExamples(family, models) {
+  return models.filter(model => parseFamilyName(model.id, family) && (!family.provider || model.providers?.includes(family.provider)));
 }
 
 function startApp() {

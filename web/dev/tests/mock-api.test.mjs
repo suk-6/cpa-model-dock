@@ -461,3 +461,18 @@ test('failed refresh prevents auto upgrades; missing historical alias and invali
   assert.equal((await other.post('/history/restore',{revision:saved.data.revision,entry_id:entry.id,scope:'alias_target'})).status,422);
   assert.equal((await other.state()).revision,saved.data.revision);
 });
+
+test('family preview rejects disabled, invalid, ambiguous and embedded dates', async (t) => {
+  const ids = ['claude-opus-4-5', 'claude-opus-4-5-20251101', 'claude-opus-4-5-20251301',
+    'claude-opus-4-5-251101', 'claude-opus-4.5.20251101', 'claude-opus-4-20251101-5'];
+  const {state, save, post} = await fixture(t, {catalog:ids.map(id => ({id,providers:['anthropic'],routable:true}))});
+  const draft = await state();
+  draft.aliases = [];
+  draft.families = [{id:'fam_opus',name:'Opus',template:'claude-opus-{version}',allow_dated:false}];
+  draft.rules = [{id:'r_opus',enabled:true,kind:'family',value:'fam_opus'}];
+  assert.equal((await save(draft)).status,200);
+  assert.deepEqual((await post('/rules/preview')).data.rules[0].matches,[ids[0]]);
+  const dated = await state(); dated.families[0].allow_dated = true;
+  assert.equal((await save(dated)).status,200);
+  assert.deepEqual((await post('/rules/preview')).data.rules[0].matches,[ids[0],ids[1]]);
+});

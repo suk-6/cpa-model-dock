@@ -1,3 +1,4 @@
+import { parseFamilyName } from '../assets/app.js';
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
@@ -67,27 +68,10 @@ function dateNumber(raw) {
 }
 
 function parseFamily(id, family, includePrerelease = false) {
-  let name = key(id), prerelease = false;
-  const marker = name.match(/-(preview|beta|alpha|experimental|exp|rc|nightly|dev|test)(?:[.-]?\d+)?$/);
-  if (marker) { prerelease = true; name = name.slice(0, marker.index); }
-  if (prerelease && !includePrerelease) return null;
-  let trailingDate = null, dateWidth = null;
-  if (!family.template.includes('{date}')) {
-    const suffix = name.match(/-(\d{8}|\d{4}-\d{2}-\d{2})$/);
-    if (suffix && dateNumber(suffix[1]) !== null) {
-      if (!family.allow_dated) return null;
-      trailingDate = dateNumber(suffix[1]); dateWidth = 8; name = name.slice(0, suffix.index);
-    }
-  }
-  const pattern = family.template.split(/(\{version\}|\{date\})/).map((part) =>
-    part === '{version}' ? '(?<version>\\d+(?:[.-]\\d+)*)' :
-      part === '{date}' ? '(?<date>\\d{8}|\\d{4}-\\d{2}-\\d{2}|\\d{6}|\\d{4})' : escape(part)).join('');
-  const match = new RegExp(`^${pattern}$`, 'i').exec(name);
-  if (!match) return null;
-  const date = match.groups.date ? dateNumber(match.groups.date) : trailingDate;
-  if (match.groups.date && date === null) return null;
-  if (match.groups.date) dateWidth = match.groups.date.replaceAll('-', '').length;
-  return { version: match.groups.version, components: match.groups.version.split(/[.-]/).map(Number), date, dateWidth, prerelease };
+  const parsed = parseFamilyName(key(id), family, includePrerelease);
+  if (!parsed) return null;
+  return { ...parsed, components: parsed.version.split(/[.-]/).map(Number),
+    dateWidth: parsed.date?.length ?? null, date: parsed.date ? dateNumber(parsed.date) : null };
 }
 
 function compare(a, b) {
