@@ -377,4 +377,13 @@ filenames are served; GET and HEAD are supported. No management data is public.
   corrupt → policy_unavailable (deny all) until a valid state is saved via API.
 - In-memory: immutable snapshot behind atomic pointer; each request pins one snapshot at BeforeAuth
   by RequestID (released on lifecycle completion / TTL), so a request sees one consistent policy.
+- Catalog publication has a monotonic generation for completed successful and failed refreshes.
+  Delayed delivery cannot overwrite a newer generation. Applying alias checks pin both revision
+  and catalog generation, re-check them after probes, and fence publication through the commit.
+  A target withdrawn during a probe cannot be persisted from the older snapshot.
+- Health probes run outside the policy mutation mutex with a five-second wait bound and lifecycle
+  cancellation. Shutdown/reconfigure cancel management checks before taking the runtime write
+  lock. Synchronous host callbacks may continue after cancellation; one process-wide pending
+  health probe (and a separate inventory slot) bounds abandoned workers across replacements.
+  No subsequent probe starts until that slot returns. This does not cancel upstream host I/O.
 - Hooks never return errors for policy denials and recover panics internally → DENY (fail closed).
