@@ -1,0 +1,6 @@
+.ref/
+dist/
+*.dylib
+*.so
+*.dll
+*.h
