@@ -5,7 +5,9 @@
 // provenance. HostAuthFileEntry exposes neither Prefix nor credential alias
 // mappings. Consequently a slash in a registered ID establishes no trusted
 // prefix, and a different resolved destination establishes no trusted CPA alias.
-// Missing runtime entries are not treated as enabled credentials. The callbacks
+// Missing runtime entries are not treated as enabled credentials, except for
+// recognized config OpenAI-compatible registrations (see configRegistration).
+// The callbacks
 // cannot expose static executor-only models or guarantee request-time eligibility.
 package catalog
 
@@ -138,6 +140,9 @@ func (s *Service) Refresh(ctx context.Context) (result policy.Catalog) {
 			auth, confirmed = runtimeByID[credential.ID]
 		}
 		enabled := confirmed && !auth.Disabled && !auth.Unavailable && !strings.EqualFold(strings.TrimSpace(auth.Status), "disabled")
+		if !confirmed && configRegistration(credential) {
+			enabled = true
+		}
 		key := credential.ID
 		if key == "" {
 			key = credential.AuthIndex
@@ -194,6 +199,34 @@ func (s *Service) Refresh(ctx context.Context) (result policy.Catalog) {
 	sort.Slice(next.Models, func(i, j int) bool { return next.Models[i].ID < next.Models[j].ID })
 	s.snapshot.Store(&next)
 	return copyCatalog(next)
+}
+
+// CPA v8.0.44 config synthesis creates active OpenAI-compatible credentials
+// without a file path or runtime_only attribute. auth.list/get_runtime omit
+// them, while auth.models includes their live per-client registry entries.
+// Disabled config credentials are removed by synthesis/reconciliation. Use that
+// positive registration evidence only for the host's specific config ID/provider
+// pair; arbitrary missing OAuth/runtime records remain unconfirmed. This is a
+// cached registration fact, not a guarantee of request-time health/eligibility.
+// Sources: internal/watcher/synthesizer/config.go:synthesizeOpenAICompat,
+// internal/pluginhost/auth_callbacks.go:buildHostAuthFileEntry/buildHostAuthModels,
+// sdk/cliproxy/service_auth.go:applyAuthUpdate.
+func configRegistration(c credentialModels) bool {
+	const prefix = "openai-compatibility:"
+	if !strings.HasPrefix(c.ID, prefix) || c.AuthIndex == "" || len(c.Models) == 0 {
+		return false
+	}
+	nameAndHash := strings.TrimPrefix(c.ID, prefix)
+	i := strings.LastIndexByte(nameAndHash, ':')
+	if i <= 0 || len(nameAndHash[i+1:]) != 12 {
+		return false
+	}
+	for _, ch := range nameAndHash[i+1:] {
+		if !(ch >= '0' && ch <= '9' || ch >= 'a' && ch <= 'f') {
+			return false
+		}
+	}
+	return c.Provider == "openai-compatible-"+nameAndHash[:i]
 }
 
 func (s *Service) failed(message string) policy.Catalog {

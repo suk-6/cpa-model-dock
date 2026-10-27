@@ -120,6 +120,7 @@ func (r *runtime) Dispatch(method string, raw []byte) (encoded []byte) {
 	case pluginabi.MethodExecutorExecute, pluginabi.MethodExecutorExecuteStream, pluginabi.MethodExecutorCountTokens, pluginabi.MethodExecutorHTTPRequest:
 		// A static denial executor makes the self route valid at the host's routing
 		// precheck. Alpha Search rejects that route with 503 before calling it.
+		// Ordinary unavailable aliases terminate in BeforeAuth first.
 		return errorEnvelope("model_not_allowed", "Model policy denied request", 503)
 	default:
 		return errorEnvelope("unknown_method", "unsupported plugin method", 400)
@@ -171,7 +172,7 @@ func (r *runtime) register(raw []byte) (any, error) {
 		Capabilities  map[string]any     `json:"capabilities"`
 	}{schema, metadata(), map[string]any{
 		"model_router": true, "request_interceptor": true, "response_interceptor": true, "response_stream_interceptor": true, "request_lifecycle_plugin": true, "frontend_auth_provider": true, "frontend_auth_provider_exclusive": false, "management_api": true,
-		"executor": true, "executor_model_scope": "static", "executor_input_formats": []string{"codex-alpha-search"}, "executor_output_formats": []string{"codex-alpha-search"},
+		"executor": true, "executor_model_scope": "static", "executor_input_formats": []string{"codex-alpha-search", "openai", "openai-response", "claude", "gemini"}, "executor_output_formats": []string{"codex-alpha-search", "openai", "openai-response", "claude", "gemini"},
 	}}, nil
 }
 func metadata() pluginapi.Metadata {

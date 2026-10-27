@@ -200,9 +200,9 @@ func (h *Hooks) expire(id string, p *requestPin) {
 	delete(h.pins, id)
 }
 
-// The parent registers a static executor for this self route, supporting
-// codex-alpha-search. Unlike an invented provider, the host accepts this target
-// even when codex is the only provider with credentials; Alpha then returns 503.
+// The parent registers a static denial executor for this self route. It never
+// forwards requests. Alpha rejects it with 503; ordinary requests reach
+// BeforeAuth even when the missing alias has no host registry entry.
 func sentinel() pluginapi.ModelRouteResponse {
 	return pluginapi.ModelRouteResponse{Handled: true, TargetKind: pluginapi.ModelRouteTargetSelf, Reason: "model_not_allowed"}
 }
@@ -218,6 +218,12 @@ func (h *Hooks) Route(req pluginapi.ModelRouteRequest) (out pluginapi.ModelRoute
 	alpha := req.SourceFormat == "codex-alpha-search"
 	if !d.Allowed {
 		if alpha && h.Guard {
+			return sentinel()
+		}
+		if !alpha && d.Code == "alias_target_unavailable" {
+			// Provider lookup precedes BeforeAuth in CPA. Without a valid
+			// route, a removed target yields generic 400 model_not_found
+			// instead of the contract's 503 alias_target_unavailable.
 			return sentinel()
 		}
 		return out // BeforeAuth supplies a real protocol denial on ordinary routes.

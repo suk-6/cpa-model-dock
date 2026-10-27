@@ -158,7 +158,11 @@ func filterCatalog(s *policy.Snapshot, format string, body []byte) []byte {
 			if name == "" {
 				continue
 			}
-			if d := s.Decide(name); d.Allowed && s.Routable(name, "") {
+			// CPA's own entries are evidence of publication. The callback
+			// inventory may be empty during startup or omit host-only models;
+			// absence there must not add a second allowlist to saved policy.
+			// Injected aliases below still require a known routable target.
+			if d := s.Decide(name); d.Allowed {
 				result = append(result, entry)
 				seen[s.Normalize(name)] = true
 			}

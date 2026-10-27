@@ -543,6 +543,11 @@ func TestUnavailableAndMissingAliasTarget(t *testing.T) {
 	catalog := s.CatalogCopy()
 	catalog.Models = nil
 	h := hooksFor(t, policy.New(s.StateCopy(), catalog, true))
+	for _, format := range []string{"openai", "openai-response", "claude", "gemini"} {
+		if route := h.Route(pluginapi.ModelRouteRequest{RequestedModel: "friendly", SourceFormat: format}); !route.Handled || route.TargetKind != pluginapi.ModelRouteTargetSelf {
+			t.Fatalf("unavailable alias must reach BeforeAuth via denial executor: %+v", route)
+		}
+	}
 	assertTermination(t, h.Before(pluginapi.RequestInterceptRequest{RequestedModel: "friendly", Model: "gpt-6.1-sol"}), 503)
 	invalid := New(func() *policy.Snapshot { return policy.New(policy.DefaultState(), policy.Catalog{}, false) })
 	t.Cleanup(invalid.Close)
@@ -559,5 +564,41 @@ func TestRewritePreservesNonModelText(t *testing.T) {
 	}
 	if strings.Count(string(body), `"model":"friendly"`) != 2 || strings.Count(string(body), `"model":"target"`) != 2 {
 		t.Fatal(string(body))
+	}
+}
+
+// The host's model list must remain usable before the background inventory has
+// loaded, and for static entries that callbacks never report.
+func TestCatalogHostEntriesDoNotRequireInventory(t *testing.T) {
+	for _, catalog := range []policy.Catalog{{}, {OK: true}, {OK: false, Error: "refresh failed"}, {OK: true, Models: []policy.Model{{ID: "gpt-6.1-sol", Routable: false}}}} {
+		for _, whitelist := range []bool{false, true} {
+			state := policy.DefaultState()
+			state.Settings.WhitelistEnabled = whitelist
+			state.Rules = []policy.Rule{{ID: "allow", Enabled: true, Kind: "exact", Value: "gpt-6.1-sol"}}
+			h := hooksFor(t, policy.New(state, catalog, true))
+			out := h.Response(pluginapi.ResponseInterceptRequest{SourceFormat: "openai", Body: []byte(`{"object":"list","data":[{"id":"gpt-6.1-sol","owned_by":"host"},{"id":"other"}]}`)})
+			var got struct{ Data []struct{ ID string } }
+			if err := json.Unmarshal(out.Body, &got); err != nil {
+				t.Fatal(err)
+			}
+			want := 2
+			if whitelist {
+				want = 1
+			}
+			if len(got.Data) != want || got.Data[0].ID != "gpt-6.1-sol" {
+				t.Fatalf("whitelist=%v inventory=%+v: %s", whitelist, catalog, out.Body)
+			}
+			request := h.Before(pluginapi.RequestInterceptRequest{RequestID: fmt.Sprintf("pass-%v-%v", whitelist, catalog.OK), RequestedModel: "gpt-6.1-sol", Model: "gpt-6.1-sol", SourceFormat: "openai"})
+			if request.Terminate {
+				t.Fatalf("allowed real model denied without inventory: %+v", request)
+			}
+		}
+	}
+	state := policy.DefaultState()
+	state.Aliases = []policy.Alias{{ID: "a", Name: "friendly", Target: "gpt-6.1-sol", Mode: "pinned", Enabled: true, ExposeOriginal: false}}
+	h := hooksFor(t, policy.New(state, policy.Catalog{}, true))
+	out := h.Response(pluginapi.ResponseInterceptRequest{SourceFormat: "openai", Body: []byte(`{"data":[{"id":"gpt-6.1-sol"},{"id":"other"}]}`)})
+	if bytes.Contains(out.Body, []byte("gpt-6.1-sol")) || bytes.Contains(out.Body, []byte("friendly")) || !bytes.Contains(out.Body, []byte("other")) {
+		t.Fatalf("unknown alias target must stay hidden without injecting alias: %s", out.Body)
 	}
 }

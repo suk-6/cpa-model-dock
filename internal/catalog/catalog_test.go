@@ -266,3 +266,32 @@ func TestProviderPinDoesNotBorrowOtherProviderRoutability(t *testing.T) {
 		t.Fatal(d)
 	}
 }
+
+func TestConfigOpenAIRegistrationsWithoutFileRuntime(t *testing.T) {
+	const id = "openai-compatibility:fixture:0123456789ab"
+	host := &fakeHost{models: `{"credentials":[{"id":"` + id + `","auth_index":"cfg","provider":"openai-compatible-fixture","models":["gpt-6.1-sol"]}]}`, list: `{"files":[]}`}
+	s := New(host)
+	if m := find(t, s.Refresh(context.Background()), "gpt-6.1-sol"); !m.Routable || m.CredentialCount != 1 {
+		t.Fatalf("live config registration lost: %+v", m)
+	}
+	// If runtime evidence exists, its disabled/unavailable flag wins.
+	host.list = `{"files":[{"id":"` + id + `","auth_index":"cfg"}]}`
+	host.runtime = map[string]string{"cfg": `{"auth":{"id":"` + id + `","auth_index":"cfg","disabled":true}}`}
+	if m := find(t, s.Refresh(context.Background()), "gpt-6.1-sol"); m.Routable {
+		t.Fatalf("disabled config enabled: %+v", m)
+	}
+	host.models = `{"credentials":[]}`
+	if got := s.Refresh(context.Background()); len(got.Models) != 0 {
+		t.Fatalf("removed config retained: %+v", got)
+	}
+	for _, c := range []credentialModels{
+		{ID: id, AuthIndex: "cfg", Provider: "codex", Models: []string{"m"}},
+		{ID: "oauth:fixture:0123456789ab", AuthIndex: "cfg", Provider: "openai-compatible-fixture", Models: []string{"m"}},
+		{ID: id, Provider: "openai-compatible-fixture", Models: []string{"m"}},
+		{ID: id, AuthIndex: "cfg", Provider: "openai-compatible-fixture"},
+	} {
+		if configRegistration(c) {
+			t.Fatalf("unconfirmed registration enabled: %+v", c)
+		}
+	}
+}
