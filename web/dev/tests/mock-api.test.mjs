@@ -41,16 +41,18 @@ test('all management routes require the exact Bearer key; unknown routes and mal
   assert.equal((await call('/validate', { method: 'POST', body: [] })).status, 400);
 });
 
-test('only the four fixed public resource files are served with correct MIME types', async (t) => {
+test('only the five fixed public resource files are served with correct MIME types and CSP', async (t) => {
   const assetsDir = await mkdtemp(join(tmpdir(), 'model-dock-mock-'));
   t.after(() => rm(assetsDir, { recursive: true, force: true }));
-  const files = { 'index.html': 'text/html', 'app.js': 'text/javascript', 'app.css': 'text/css', 'i18n.js': 'text/javascript' };
+  const files = { 'index.html': 'text/html', 'app.js': 'text/javascript', 'app.css': 'text/css', 'i18n.js': 'text/javascript', 'favicon.svg': 'image/svg+xml' };
   for (const file of [...Object.keys(files), 'secret.json', 'constructor', 'toString']) await writeFile(join(assetsDir, file), `fixture ${file}`);
   const { origin } = await fixture(t, { assetsDir });
   for (const [file, mime] of Object.entries(files)) {
     const response = await fetch(origin + RESOURCE_BASE + file);
     assert.equal(response.status, 200);
-    assert.match(response.headers.get('content-type'), new RegExp(`^${mime}`));
+    assert.equal(response.headers.get('content-type'), `${mime}; charset=utf-8`);
+    assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(response.headers.get('content-security-policy'), "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'");
     assert.equal(await response.text(), `fixture ${file}`);
   }
   const head = await fetch(origin + RESOURCE_BASE + 'index.html', { method: 'HEAD' });
@@ -76,7 +78,7 @@ test('overview, catalog, built-in families, and initial policy agree', async (t)
   assert.equal(overview.counts.public_models, catalog.models.filter((model) => model.public).length);
   assert.equal(overview.counts.public_aliases, 2);
   assert.equal(overview.guard.verified, false);
-  assert.ok(overview.guard.limitations.some((text) => /real CPA/.test(text)));
+  assert.ok(overview.guard.limitations.some((text) => text.code === 'realtime_proxy_required'));
   assert.deepEqual(overview.active_mappings[0], { alias: 'gpt-sol', target: 'gpt-6.1-sol' });
   const catalogOnly = catalog.models.find((model) => model.id === 'gpt-6.12-sol');
   assert.equal(catalogOnly.routable, false); assert.equal(catalogOnly.public, false);
@@ -130,7 +132,7 @@ test('validation gives actionable paths and never saves partial or invalid polic
   assert.equal(validated.status, 200); assert.equal(validated.data.valid, false);
   const paths = validated.data.details.map((detail) => detail.path);
   for (const path of ['settings.refresh_interval_seconds', 'families[0].template', 'aliases[0].name', 'aliases[0].auto.family', 'rules[2].value']) assert.ok(paths.includes(path), path);
-  assert.ok(validated.data.details.some((detail) => detail.code === 'alias_conflict'));
+  assert.ok(validated.data.details.some((detail) => detail.code === 'alias_catalog_conflict'));
   const rejected = await save(invalid);
   assert.equal(rejected.status, 422); assert.equal(rejected.data.error.code, 'validation_failed');
   assert.ok(rejected.data.error.details.every((detail) => detail.path && detail.code && detail.message));
@@ -151,7 +153,7 @@ test('policy uses whole-family rules, hidden originals, exact overrides, globs, 
   assert.equal((await save(draft)).status, 200);
   for (const model of ['GPT-6.10-SOL', ' p/gpt-6.10-sol(high) ']) {
     const decision = (await post('/explain', { model })).data;
-    assert.equal(decision.allowed, true); assert.equal(decision.code, 'rule:r_sol');
+    assert.equal(decision.allowed, true); assert.equal(decision.code, 'rule_allowed');
   }
   assert.equal((await post('/explain', { model: 'gpt-6.10-sol-mini' })).data.allowed, false);
   assert.equal((await post('/explain', { model: 'gpt-6.11-sol-preview' })).data.allowed, false);
@@ -284,7 +286,7 @@ test('custom family references work in the same save; dated matching respects al
   const invalid = await state(); invalid.aliases.push({ ...invalid.aliases[0], id: 'al_dupe', name: 'SHORT' });
   const conflict = await save(invalid);
   assert.equal(conflict.status, 422);
-  assert.ok(conflict.data.error.details.some((detail) => detail.path === 'aliases[1].name' && detail.code === 'alias_conflict'));
+  assert.ok(conflict.data.error.details.some((detail) => detail.path === 'aliases[1].name' && detail.code === 'alias_name_conflict'));
 });
 
 test('unavailable policy fails closed and a valid state save recovers it', async (t) => {
@@ -358,16 +360,17 @@ test('history pages newest first with an exclusive cursor; state restore undoes 
 test('wire responses use complete state, structured reasons, nullable errors, and exact envelopes', async (t) => {
   const { state, save, post, call } = await fixture(t);
   const keys = (value, expected) => assert.deepEqual(Object.keys(value).sort(), expected.split(' ').sort());
-  const reason = (value) => { keys(value,'code message'); assert.equal(typeof value.code,'string'); assert.equal(typeof value.message,'string'); };
+  const reason = (value) => { keys(value,'code params message'); assert.ok(value.params && typeof value.params === 'object' && !Array.isArray(value.params)); assert.equal(typeof value.code,'string'); assert.equal(typeof value.message,'string'); };
   const stateKeys='schema revision updated_at settings families builtin_families aliases rules alias_status';
   const initial=await state(); keys(initial,stateKeys);
   const overview=(await call('/overview')).data;
   keys(overview,'plugin_version host_schema policy_enabled whitelist_enabled counts active_mappings recent_auto_updates catalog guard warnings');
-  keys(overview.guard,'enabled verified limitations'); keys(overview.catalog,'last_refresh_at ok error'); assert.equal(overview.catalog.error,null);
+  keys(overview.guard,'enabled verified covered limitations'); keys(overview.catalog,'last_refresh_at ok error error_detail'); assert.equal(overview.catalog.error,null); assert.equal(overview.catalog.error_detail,null);
   for (const mapping of overview.active_mappings) keys(mapping,'alias target');
   for (const path of ['/catalog','/catalog/refresh']) {
     const catalog=(path.endsWith('refresh') ? await post(path) : await call(path)).data;
-    keys(catalog,'refreshed_at ok error models');
+    keys(catalog,'refreshed_at ok error error_detail models');
+    assert.equal(catalog.error,null); assert.equal(catalog.error_detail,null);
     for (const model of catalog.models) { keys(model,'id providers credential_count routable public reason'); reason(model.reason); }
   }
   const dry=(await post('/aliases/check',{dry_run:true,revision:'ignored'})).data;
@@ -380,11 +383,168 @@ test('wire responses use complete state, structured reasons, nullable errors, an
   const checked=await post('/aliases/check',{revision:initial.revision});
   assert.equal(checked.status,200);
   for (const status of Object.values((await state()).alias_status)) { keys(status,'current_target candidates last_checked_at last_result reason target_routable'); reason(status.reason); }
-  const entry=(await call('/history')).data.entries[0]; keys(entry,'id at actor kind summary before after'); keys(entry.before,'alias_id target'); keys(entry.after,'alias_id target');
+  const entry=(await call('/history')).data.entries[0]; keys(entry,'id at actor kind summary summary_detail before after'); reason(entry.summary_detail); keys(entry.before,'alias_id target'); keys(entry.after,'alias_id target');
   const restored=await post('/history/restore',{entry_id:entry.id,scope:'alias_target',revision:checked.data.revision}); keys(restored.data,stateKeys);
   const saved=await save(await state()); keys(saved.data,stateKeys);
-  const conflict=await save(initial); keys(conflict.data,'error state'); keys(conflict.data.error,'code message'); keys(conflict.data.state,stateKeys);
+  const conflict=await save(initial); keys(conflict.data,'error state'); keys(conflict.data.error,'code params message'); keys(conflict.data.state,stateKeys);
   const explain=(await post('/explain',{model:'gpt-sol'})).data; keys(explain,'allowed status code reason steps resolved_target'); explain.steps.forEach(reason);
+  reason(explain.reason);
+  for (const text of [...overview.warnings, ...overview.guard.covered, ...overview.guard.limitations]) reason(text);
+});
+
+test('overview keeps actionable warnings separate from guard coverage and reports recovery', async (t) => {
+  let fail = false;
+  const { state, save, post, call } = await fixture(t, { policyAvailable: false, refreshCatalog(models) {
+    if (fail) throw Error('private credential details');
+    return models;
+  } });
+  const initial = (await call('/overview')).data;
+  assert.deepEqual(initial.warnings.map((text) => text.code), ['priority_unverified', 'policy_unavailable']);
+  assert.deepEqual(initial.guard.covered.map((text) => text.code), ['http_model_requests_covered', 'model_lists_covered', 'responses_websocket_initial_covered']);
+  assert.deepEqual(initial.guard.limitations.map((text) => text.code), ['realtime_proxy_required', 'websocket_messages_proxy_required', 'model_detail_proxy_required', 'admin_api_tool_proxy_required']);
+  assert.match(initial.guard.covered[0].message, /streaming/);
+  assert.match(initial.guard.limitations[0].message, /built-in API keys.*bypass.*reverse proxy/);
+  const draft = await state(); draft.aliases[0].target = 'missing-model';
+  assert.equal((await save(draft)).status, 200);
+  fail = true;
+  const failed = (await post('/catalog/refresh')).data;
+  assert.equal(typeof failed.error, 'string'); assert.ok(failed.error.length > 0);
+  assert.deepEqual(failed.error_detail.params, {}); assert.equal(failed.error_detail.code, 'catalog_unavailable');
+  assert.deepEqual(Object.keys(failed.error_detail).sort(), ['code', 'message', 'params']);
+  const warning = (await call('/overview')).data;
+  assert.deepEqual(warning.warnings.map((text) => text.code), ['priority_unverified', 'catalog_unavailable', 'alias_target_unavailable']);
+  assert.deepEqual(warning.warnings[2].params, { alias_id: 'al_sol', alias: 'gpt-sol', target: 'missing-model' });
+  assert.deepEqual(warning.catalog.error, failed.error);
+  assert.deepEqual(warning.catalog.error_detail, failed.error_detail);
+  const catalog = (await call('/catalog')).data;
+  assert.equal(catalog.error, failed.error); assert.deepEqual(catalog.error_detail, failed.error_detail);
+  assert.ok(!JSON.stringify(warning).includes('private credential'));
+  const disabled = await state(); disabled.aliases[0].enabled = false; await save(disabled);
+  fail = false; await post('/catalog/refresh');
+  const recovered = (await call('/overview')).data;
+  assert.deepEqual(recovered.warnings.map((text) => text.code), ['priority_unverified']);
+  assert.equal(recovered.catalog.error, null);
+  assert.equal(recovered.catalog.error_detail, null);
+  const recoveredCatalog = (await call('/catalog')).data;
+  assert.equal(recoveredCatalog.error, null); assert.equal(recoveredCatalog.error_detail, null);
+  assert.deepEqual(recovered.guard, initial.guard);
+});
+
+test('history derives semantic alias, rule and settings changes, preserving English fallback summaries', async (t) => {
+  const cases = [
+    ['alias_created', (s) => s.aliases.push({ ...s.aliases[1], id: 'al_new', name: 'new-opus' }), { alias_id: 'al_new', alias: 'new-opus', target: 'claude-opus-4-5-20251101' }],
+    ['alias_renamed', (s) => { s.aliases[1].name = 'new-opus'; }, { alias_id: 'al_opus', from: 'opus', to: 'new-opus' }],
+    ['alias_deleted', (s) => s.aliases.splice(1, 1), { alias_id: 'al_opus', alias: 'opus' }],
+    ['alias_disabled', (s) => { s.aliases[1].enabled = false; }, { alias_id: 'al_opus', alias: 'opus' }],
+    ['alias_target_changed', (s) => { s.aliases[1].target = 'claude-opus-4-6'; }, { alias_id: 'al_opus', alias: 'opus', from: 'claude-opus-4-5-20251101', to: 'claude-opus-4-6' }],
+    ['alias_changed', (s) => { s.aliases[1].expose_original = false; }, { alias_id: 'al_opus', alias: 'opus' }],
+    ['rule_added', (s) => s.rules.push({ id: 'new_rule', kind: 'exact', value: 'sample', enabled: true }), { rule_id: 'new_rule', kind: 'exact', value: 'sample' }],
+    ['rule_removed', (s) => s.rules.splice(0, 1), { rule_id: 'r_sol', kind: 'family', value: 'builtin:gpt-sol' }],
+    ['rule_disabled', (s) => { s.rules[0].enabled = false; }, { rule_id: 'r_sol', kind: 'family', value: 'builtin:gpt-sol' }],
+    ['rule_changed', (s) => { s.rules[0].note = 'Different note'; }, { rule_id: 'r_sol', kind: 'family', value: 'builtin:gpt-sol' }],
+    ['whitelist_enabled', (s) => { s.settings.whitelist_enabled = true; }, {}],
+    ['settings_changed', (s) => { s.settings.refresh_interval_seconds = 60; }, {}],
+    ['families_changed', (s) => s.families.push({ id: 'fam_sample', name: 'Sample', template: 'sample-{version}', provider: '', allow_dated: true }), {}],
+    ['policy_unchanged', () => {}, {}],
+  ];
+  for (const [code, change, params] of cases) await t.test(code, async (t) => {
+    const { state, save, call } = await fixture(t);
+    const draft = await state(); change(draft);
+    assert.equal((await save(draft)).status, 200);
+    const [entry] = (await call('/history')).data.entries;
+    assert.equal(entry.summary_detail.code, code);
+    assert.deepEqual(entry.summary_detail.params, params);
+    assert.equal(entry.summary, entry.summary_detail.message);
+    assert.ok(entry.summary.length > 0);
+  });
+});
+
+test('combined history changes are complete and ordered by stable IDs, independent of array order', async (t) => {
+  const { state, save, call } = await fixture(t);
+  const draft = await state();
+  draft.aliases.reverse(); draft.rules.reverse();
+  const opus = draft.aliases.find((alias) => alias.id === 'al_opus');
+  opus.name = 'renamed-opus'; opus.enabled = false; opus.target = 'claude-opus-4-6'; opus.provider = 'anthropic';
+  draft.aliases.find((alias) => alias.id === 'al_sol').target = 'gpt-6.9-sol';
+  draft.rules.find((rule) => rule.id === 'r_sol').enabled = false;
+  draft.rules.find((rule) => rule.id === 'r_alias').note = 'Changed note';
+  draft.settings.whitelist_enabled = true; draft.settings.rewrite_response_model = true;
+  draft.families = [{ id: 'fam_a', name: 'A', template: 'a-{version}' }, { id: 'fam_b', name: 'B', template: 'b-{version}' }];
+  assert.equal((await save(draft)).status, 200);
+  const entry = (await call('/history')).data.entries[0], summary = entry.summary_detail;
+  assert.equal(summary.code, 'changes'); assert.equal(summary.params.count, 10);
+  assert.equal(summary.message, `10 changes: ${summary.params.changes.map((text) => text.message).join('; ')}`);
+  assert.equal(entry.summary, summary.message);
+  assert.deepEqual(summary.params.changes.map((text) => text.code), ['alias_renamed', 'alias_disabled', 'alias_target_changed', 'alias_changed', 'alias_target_changed', 'rule_changed', 'rule_disabled', 'whitelist_enabled', 'settings_changed', 'families_changed']);
+  assert.deepEqual(summary.params.changes.slice(0, 5).map((text) => text.params.alias_id), ['al_opus', 'al_opus', 'al_opus', 'al_opus', 'al_sol']);
+  const reordered = await state(); reordered.aliases.reverse(); reordered.rules.reverse(); reordered.families.reverse();
+  await save(reordered);
+  assert.equal((await call('/history')).data.entries[0].summary_detail.code, 'policy_unchanged');
+});
+
+test('re-enabling aliases and rules and disabling the whitelist preserves distinct history codes', async (t) => {
+  const { state, save, call } = await fixture(t);
+  const disabled = await state(); disabled.aliases[1].enabled = false; disabled.rules[0].enabled = false; disabled.settings.whitelist_enabled = true;
+  await save(disabled);
+  const enabled = await state(); enabled.aliases[1].enabled = true; enabled.rules[0].enabled = true; enabled.settings.whitelist_enabled = false;
+  await save(enabled);
+  const summary = (await call('/history')).data.entries[0].summary_detail;
+  assert.equal(summary.params.count, 3);
+  assert.deepEqual(summary.params.changes.map((text) => text.code), ['alias_enabled', 'rule_enabled', 'whitelist_disabled']);
+});
+
+test('auto updates, recent updates and restores carry translatable identities and targets', async (t) => {
+  const { state, post, call } = await fixture(t);
+  const checked = (await post('/aliases/check', { revision: (await state()).revision })).data;
+  assert.deepEqual(checked.results[0].reason.params, { from: 'gpt-6.1-sol', to: 'gpt-6.10-sol' });
+  const entry = (await call('/history')).data.entries[0];
+  assert.equal(entry.summary_detail.code, 'alias_target_auto_updated');
+  assert.deepEqual(entry.summary_detail.params, { alias_id: 'al_sol', alias: 'gpt-sol', from: 'gpt-6.1-sol', to: 'gpt-6.10-sol' });
+  assert.deepEqual((await call('/overview')).data.recent_auto_updates[0], entry);
+  await post('/history/restore', { entry_id: entry.id, scope: 'alias_target', revision: checked.revision });
+  const restored = (await call('/history')).data.entries[0];
+  assert.equal(restored.summary_detail.code, 'restored'); assert.deepEqual(restored.summary_detail.params, { entry_id: entry.id });
+  assert.equal(restored.summary, restored.summary_detail.message);
+});
+
+test('explain and catalog use stable rule codes with parameters and structured reasons', async (t) => {
+  const { state, save, call, post } = await fixture(t);
+  const draft = await state(); draft.settings.whitelist_enabled = true; await save(draft);
+  const explanation = (await post('/explain', { model: ' p/GPT-6.10-SOL(high) ' })).data;
+  assert.equal(explanation.code, 'rule_allowed');
+  assert.deepEqual(explanation.reason.params, { rule_id: 'r_sol' });
+  assert.deepEqual(explanation.steps[0].params, { model: 'gpt-6.10-sol' });
+  assert.deepEqual(explanation.steps.at(-1), explanation.reason);
+  const model = (await call('/catalog')).data.models.find((model) => model.id === 'gpt-6.10-sol');
+  assert.deepEqual(model.reason, explanation.reason);
+  const alias = (await post('/explain', { model: 'gpt-sol' })).data;
+  assert.deepEqual(alias.reason.params, { alias: 'gpt-sol', target: 'gpt-6.1-sol' });
+});
+
+test('validation text distinguishes contexts and preserves full nested field paths', async (t) => {
+  const { state, post } = await fixture(t);
+  const draft = await state();
+  draft.settings.whitelist_enabled = 'yes';
+  draft.families = [{ id: 'fam_invalid', name: '', template: 'missing-token' }];
+  draft.aliases[0].auto.health_check = 'yes';
+  draft.aliases[1].name = 'GPT-SOL';
+  const result = (await post('/validate', draft)).data;
+  for (const text of result.details) {
+    assert.equal(text.params.field, text.path);
+    assert.deepEqual(Object.keys(text).sort(), ['code', 'message', 'params', 'path']);
+  }
+  for (const path of ['settings.whitelist_enabled', 'aliases[0].auto.health_check']) {
+    const text = result.details.find((text) => text.path === path);
+    assert.equal(text.code, 'invalid_type'); assert.deepEqual(text.params, { field: path, expected: 'boolean' });
+  }
+  for (const code of ['required_family_name', 'invalid_template_tokens', 'alias_name_conflict']) assert.ok(result.details.some((text) => text.code === code), code);
+  const missing = (await post('/validate')).data.details;
+  for (const field of ['settings', 'families', 'aliases', 'rules']) {
+    const text = missing.find((text) => text.path === field);
+    assert.equal(text.code, 'required_full_state_field'); assert.deepEqual(text.params, { field });
+  }
+  const model = (await post('/explain', {})).data.error.details[0];
+  assert.equal(model.code, 'required_model'); assert.deepEqual(model.params, { field: 'model' });
 });
 
 test('revision guards reject missing, malformed, disagreeing tokens but readonly operations ignore them', async (t) => {

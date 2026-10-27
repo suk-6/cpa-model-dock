@@ -92,8 +92,8 @@ test('every translation key exists in both languages, with the same placeholders
   assert.equal(translate('ko','revision',{revision:12}),'버전 12');
   assert.throws(() => translate('en','missing_key'));
 });
-test('the embed has exactly four served files and no inline code or styles', async () => {
-  assert.deepEqual((await readdir(new URL('../../assets/',import.meta.url))).sort(),['app.css','app.js','i18n.js','index.html']);
+test('the embed has exactly five served files and no inline code or styles', async () => {
+  assert.deepEqual((await readdir(new URL('../../assets/',import.meta.url))).sort(),['app.css','app.js','favicon.svg','i18n.js','index.html']);
   const html = await readFile(new URL('../../assets/index.html',import.meta.url),'utf8');
   assert.doesNotMatch(html,/<style\b|\sstyle=|\son\w+=|<script(?![^>]*\bsrc=)/i);
   const code = await readFile(new URL('../../assets/app.js',import.meta.url),'utf8');
@@ -124,4 +124,18 @@ test('family examples never absorb calendar dates into numeric versions', () => 
   assert.deepEqual(familyExamples(family,models).map(m => m.id),[ids[0],ids[8]]);
   assert.deepEqual(familyExamples({...family,allow_dated:true},models).map(m => m.id),[ids[0],ids[1],ids[2],ids[8]]);
   assert.deepEqual(familyExamples({template:'claude-opus-{version}-{date}',allow_dated:false},[models[4]]),[models[4]]);
+});
+
+test('server text uses codes in both languages and preserves unknown message fallbacks', async () => {
+  const { translateServer } = await import('../../assets/i18n.js');
+  const status = {code:'up_to_date',params:{},message:'Internal English evaluator text'};
+  assert.equal(translateServer('en',status),'Already using the latest available version.');
+  assert.equal(translateServer('ko',status),'현재 사용 가능한 최신 버전입니다.');
+  assert.equal(translateServer('ko',{code:'future_code',message:'New server fallback'}),'New server fallback');
+  assert.equal(translateServer('ko','Legacy fallback'),'Legacy fallback');
+  const change = {code:'alias_target_auto_updated',params:{alias:'sol',from:'6.1',to:'6.10'},message:'internal'};
+  const combined = {code:'changes',params:{count:3,changes:[change,{code:'whitelist_enabled',params:{}},{code:'settings_changed',params:{}}]}};
+  assert.equal(translateServer('ko',combined),'변경 3건: 별칭 sol 자동 업데이트: 6.1 → 6.10; 허용 목록 사용; 정책 기본 설정 변경');
+  assert.match(translateServer('en',combined),/^3 changes: Automatically updated sol: 6.1 → 6.10/);
+  assert.equal(escapeHTML(translateServer('ko',{code:'alias_created',params:{alias:'<img>',target:'x'}})),'별칭 생성: &lt;img&gt; → x');
 });

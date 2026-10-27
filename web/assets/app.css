@@ -454,7 +454,29 @@ tr:last-child td {
   gap:10px
 }
 .test-form input {
-  min-width:0
+  min-width:0;
+  flex:1
+}
+.test-form button {
+  flex-shrink:0
+}
+.auto-updates,.coverage {
+  grid-column:1/-1
+}
+.coverage-columns {
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:24px
+}
+.coverage h4 {
+  margin-top:18px;
+  font-size:.85rem
+}
+.coverage ul {
+  padding-left:20px
+}
+.coverage li+li {
+  margin-top:8px
 }
 .timeline-item {
   border-bottom:1px solid var(--line);
@@ -683,7 +705,7 @@ summary {
   .card {
     padding:17px
   }
-  .form-grid,.rule-edit {
+  .form-grid,.rule-edit,.coverage-columns {
     grid-template-columns:1fr
   }
   .stats {
