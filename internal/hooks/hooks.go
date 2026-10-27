@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/suk-6/cpa-model-dock/internal/policy"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+	"github.com/suk-6/cpa-model-dock/internal/policy"
 )
 
 const requestTTL = 10 * time.Minute
@@ -31,16 +31,17 @@ type Hooks struct {
 }
 
 type requestPin struct {
-	snapshot  *policy.Snapshot
-	requested string
-	decision  policy.Decision
-	rewrite   bool
-	timer     *time.Timer // guarded by Hooks.mu
-	expiresAt time.Time   // guarded by Hooks.mu
-	mu        sync.Mutex
-	failed    bool
-	errorSent bool
-	pending   []byte
+	snapshot     *policy.Snapshot
+	requested    string
+	decision     policy.Decision
+	rewrite      bool
+	timer        *time.Timer // guarded by Hooks.mu
+	expiresAt    time.Time   // guarded by Hooks.mu
+	mu           sync.Mutex
+	failed       bool
+	errorSent    bool
+	pending      []byte
+	streamParser streamParser
 }
 
 func New(current func() *policy.Snapshot) *Hooks {

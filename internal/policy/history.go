@@ -1,10 +1,12 @@
 package policy
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 )
 
 // HistorySummary derives semantic changes in stable ID order. The input summary
@@ -63,9 +65,17 @@ func HistorySummary(before, after State, actor, summary string) Text {
 				}
 				add(code, fmt.Sprintf("%s alias %s target from %s to %s", verb, next.Name, old.Target, next.Target), map[string]any{"alias_id": id, "alias": next.Name, "from": old.Target, "to": next.Target})
 			}
-			old.Name, old.Enabled, old.Target = next.Name, next.Enabled, next.Target
-			if !reflect.DeepEqual(old, next) {
-				add("alias_changed", "Changed alias "+next.Name, p)
+			if fields := aliasFieldChanges(old, next); len(fields) > 0 {
+				p := map[string]any{"alias_id": id, "alias": next.Name, "fields": fields, "count": len(fields)}
+				messages := make([]string, 0, len(fields))
+				for _, field := range fields[:min(3, len(fields))] {
+					name := field["field"].(string)
+					messages = append(messages, fmt.Sprintf("%s: %s → %s", aliasFieldLabel(name), aliasFieldValue(name, field["from"]), aliasFieldValue(name, field["to"])))
+				}
+				if len(fields) > 3 {
+					messages = append(messages, fmt.Sprintf("+%d more", len(fields)-3))
+				}
+				add("alias_changed", "Changed alias "+next.Name+": "+strings.Join(messages, "; "), p)
 			}
 		}
 	}
@@ -139,4 +149,97 @@ func HistorySummary(before, after State, actor, summary string) Text {
 		}
 		return NewText("changes", fmt.Sprintf("%d changes: %s", len(changes), strings.Join(messages, "; ")), map[string]any{"count": len(changes), "changes": changes})
 	}
+}
+
+func aliasFieldLabel(field string) string {
+	return map[string]string{"mode": "mode", "provider": "provider", "expose_original": "original name", "rewrite_response_model": "response name", "auto.family": "family", "auto.include_prerelease": "prereleases", "auto.health_check": "model test"}[field]
+}
+
+func aliasFieldValue(field string, value any) string {
+	if value == nil {
+		return "default"
+	}
+	if field == "mode" && value == "auto" {
+		return "automatic"
+	}
+	if field == "rewrite_response_model" {
+		if value == true {
+			return "on"
+		}
+		return "off"
+	}
+	text := []rune(fmt.Sprint(value))
+	if len(text) > 60 {
+		return string(text[:59]) + "…"
+	}
+	return string(text)
+}
+
+// Field values remain typed in params so clients can localize names and values.
+func aliasFieldChanges(old, next Alias) []map[string]any {
+	fields := []map[string]any{}
+	add := func(field string, from, to any) {
+		if !reflect.DeepEqual(from, to) {
+			fields = append(fields, map[string]any{"field": field, "from": from, "to": to})
+		}
+	}
+	response := func(value *bool) any {
+		if value == nil {
+			return nil
+		}
+		return *value
+	}
+	add("mode", old.Mode, next.Mode)
+	add("provider", old.Provider, next.Provider)
+	add("expose_original", old.ExposeOriginal, next.ExposeOriginal)
+	add("rewrite_response_model", response(old.RewriteResponseModel), response(next.RewriteResponseModel))
+	add("auto.family", old.Auto.Family, next.Auto.Family)
+	add("auto.include_prerelease", old.Auto.IncludePrerelease, next.Auto.IncludePrerelease)
+	add("auto.health_check", old.Auto.HealthCheck, next.Auto.HealthCheck)
+	return fields
+}
+
+// RestoreHistorySummary describes the selected historical version without exposing IDs.
+// aliases contains only the aliases restored by an alias_target operation.
+func RestoreHistorySummary(scope string, at time.Time, aliases []Alias) Text {
+	if scope == "state" {
+		stamp := at.UTC().Format(time.RFC3339)
+		return NewText("policy_restored", "Restored policy from "+stamp, map[string]any{"at": stamp})
+	}
+	changes := []Text{}
+	aliases = append([]Alias{}, aliases...)
+	sort.Slice(aliases, func(i, j int) bool { return aliases[i].ID < aliases[j].ID })
+	for _, alias := range aliases {
+		changes = append(changes, NewText("alias_target_restored", fmt.Sprintf("Restored alias %s target to %s", alias.Name, alias.Target), map[string]any{"alias_id": alias.ID, "alias": alias.Name, "target": alias.Target, "pinned": alias.Mode == "pinned"}))
+	}
+	if len(changes) == 1 {
+		return changes[0]
+	}
+	messages := []string{}
+	for _, change := range changes {
+		messages = append(messages, change.Message)
+	}
+	return NewText("changes", fmt.Sprintf("%d changes: %s", len(changes), strings.Join(messages, "; ")), map[string]any{"count": len(changes), "changes": changes})
+}
+
+// HistoryEntrySummary refreshes ordinary legacy diffs while retaining restore intent.
+// For management's per-alias rows, select only that alias's persisted restore detail.
+func HistoryEntrySummary(before, after State, actor, summary string, persisted *Text) Text {
+	if persisted != nil {
+		if persisted.Code == "policy_restored" || persisted.Code == "alias_target_restored" {
+			return *persisted
+		}
+		if persisted.Code == "changes" && len(after.Aliases) == 1 {
+			// Persisted nested params may have passed through encoding/json.
+			data, _ := json.Marshal(persisted.Params["changes"])
+			var changes []Text
+			_ = json.Unmarshal(data, &changes)
+			for _, change := range changes {
+				if change.Code == "alias_target_restored" && change.Params["alias_id"] == after.Aliases[0].ID {
+					return change
+				}
+			}
+		}
+	}
+	return HistorySummary(before, after, actor, summary)
 }

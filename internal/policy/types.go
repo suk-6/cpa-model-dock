@@ -60,8 +60,13 @@ type Catalog struct {
 	Models      []Model   `json:"models"`
 	Prefixes    []string  `json:"-"`
 	RefreshedAt time.Time `json:"refreshed_at"`
-	OK          bool      `json:"ok"`
-	Error       string    `json:"error,omitempty"`
+	// LastGoodAt changes only on a fresh nonempty host inventory. Stale marks
+	// retained registration facts; OK reports the latest live refresh result.
+	LastGoodAt time.Time `json:"last_good_at"`
+	Stale      bool      `json:"stale"`
+	Warning    string    `json:"warning,omitempty"`
+	OK         bool      `json:"ok"`
+	Error      string    `json:"error,omitempty"`
 }
 type Detail struct {
 	Path    string         `json:"path"`

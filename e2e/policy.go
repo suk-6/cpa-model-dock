@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 )
 
 type settings struct {
@@ -223,6 +224,60 @@ func (h *harness) pluginChecks() {
 		}
 		return
 	}
+	h.check("responses stream with rewrite", func() string {
+		original := h.state()
+		h.codex = true
+		h.writeConfig()
+		defer func() {
+			h.codex = false
+			h.writeConfig()
+			original.Revision = h.state().Revision
+			h.save(original)
+			h.eventually("Codex fixture credential removed", func() bool {
+				h.action("/catalog/refresh", nil)
+				r := h.mgmt("GET", "/catalog", nil)
+				return !bytes.Contains(r.body, []byte(`"codex"`))
+			})
+		}()
+		h.eventually("Codex fixture credential ready", func() bool {
+			h.action("/catalog/refresh", nil)
+			r := h.mgmt("GET", "/catalog", nil)
+			return bytes.Contains(r.body, []byte(`"codex"`))
+		})
+		draft := h.state()
+		draft.Aliases = append(draft.Aliases, alias{Name: "codex-friendly", Enabled: true, Mode: "pinned", Target: "gpt-6.1-sol", Provider: "codex", Expose: true})
+		draft.Settings.Rewrite = true
+		h.save(draft)
+		before := len(h.upstream.snapshot())
+		r := h.infer("/v1/responses", "codex-friendly", true)
+		wantStatus(r, 200)
+		h.assertCall(before, "gpt-6.1-sol", true)
+		require(h.upstream.snapshot()[before].Path == "/v1/responses", "Responses did not use Codex native executor")
+		require(strings.HasPrefix(r.header.Get("Content-Type"), "text/event-stream"), "Responses not SSE: %s", r.header.Get("Content-Type"))
+		models := 0
+		completed := false
+		for _, line := range strings.Split(string(r.body), "\n") {
+			if !strings.HasPrefix(line, "data:") {
+				continue
+			}
+			var event struct {
+				Type     string `json:"type"`
+				Response *struct {
+					Model string `json:"model"`
+				} `json:"response"`
+			}
+			must(json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &event))
+			if event.Response != nil {
+				require(event.Response.Model == "codex-friendly", "Responses model=%q want alias", event.Response.Model)
+				models++
+			}
+			if event.Type == "response.completed" {
+				completed = true
+			}
+		}
+		require(models >= 3 && completed, "Responses model events=%d completed=%v body=%s", models, completed, short(r.body))
+		return "native Codex API-key executor; line-chunked created/in_progress/completed all rewritten"
+	})
 	whitelisted := h.check(pluginScenarios[2], func() string {
 		p := h.state()
 		p.Settings.Whitelist = true
@@ -388,6 +443,57 @@ func (h *harness) pluginChecks() {
 		h.whitelistPolicy()
 		return "invalid mode + whitelist disable rejected atomically; revision/state unchanged"
 	})
+	h.check("history restore and pin automatic alias", func() string {
+		original := h.state()
+		current := h.dockAlias(original)
+		require(current.Mode == "auto", "fixture alias not automatic")
+		r := h.mgmt("GET", "/history?limit=100", nil)
+		wantStatus(r, 200)
+		var history struct {
+			Entries []struct {
+				ID     string `json:"id"`
+				Actor  string `json:"actor"`
+				Kind   string `json:"kind"`
+				Before struct {
+					AliasID string `json:"alias_id"`
+					Target  string `json:"target"`
+				} `json:"before"`
+			} `json:"entries"`
+		}
+		must(json.Unmarshal(r.body, &history))
+		entryID, target := "", ""
+		for _, entry := range history.Entries {
+			if entry.Actor == "auto" && entry.Kind == "alias_target" && entry.Before.AliasID == current.ID {
+				entryID, target = entry.ID, entry.Before.Target
+				break
+			}
+		}
+		require(entryID != "", "missing automatic update history")
+		r = h.mgmt("POST", "/history/restore", map[string]any{"revision": original.Revision, "entry_id": entryID, "scope": "alias_target", "pin": true})
+		wantStatus(r, 200)
+		pinned := h.state()
+		a := h.dockAlias(pinned)
+		require(pinned.Revision == original.Revision+1 && a.Mode == "pinned" && a.Target == target, "restore+pin not atomic: %+v", pinned)
+		h.action("/aliases/check", map[string]any{"alias_id": current.ID})
+		require(h.dockAlias(h.state()).Target == target, "automatic check moved pinned restore")
+		r = h.mgmt("GET", "/history?limit=1", nil)
+		wantStatus(r, 200)
+		var details struct {
+			Entries []struct {
+				Summary struct {
+					Code   string         `json:"code"`
+					Params map[string]any `json:"params"`
+				} `json:"summary_detail"`
+			} `json:"entries"`
+		}
+		must(json.Unmarshal(r.body, &details))
+		require(len(details.Entries) == 1, "missing restored history entry")
+		summary := details.Entries[0].Summary
+		require(summary.Code == "alias_target_restored" && summary.Params["alias"] == "gpt-sol" && summary.Params["target"] == target && summary.Params["pinned"] == true, "restore summary=%+v", summary)
+		original.Revision = h.state().Revision
+		h.save(original)
+		return "one revision restores target and pins; checks retain it; localized alias/target summary returned"
+	})
 	h.check(pluginScenarios[12], func() string {
 		before := h.state()
 		r := h.mgmt("GET", "/history?limit=100", nil)
@@ -406,6 +512,13 @@ func (h *harness) pluginChecks() {
 		require(len(ids) > 0, "history entries have no IDs")
 		h.stop()
 		h.start()
+		readyAt := time.Now()
+		h.whitelistPolicy()
+		aBefore := h.dockAlias(before)
+		h.chat("gpt-sol", aBefore.Target, false, "gpt-sol")
+		require(time.Since(readyAt) < time.Second, "restart alias/listing needed %s after readiness", time.Since(readyAt))
+		status := decode[map[string]any](h.mgmt("GET", "/state", nil))["alias_status"].(map[string]any)[aBefore.ID].(map[string]any)
+		require(status["last_checked_at"] != nil && status["reason"].(map[string]any)["code"] != "not_checked", "restart lost alias evaluation status: %v", status)
 		h.action("/catalog/refresh", nil)
 		after := h.state()
 		require(reflect.DeepEqual(before, after), "state changed across restart: before=%+v after=%+v", before, after)
@@ -424,7 +537,7 @@ func (h *harness) pluginChecks() {
 		h.whitelistPolicy()
 		a := h.dockAlias(after)
 		h.chat("gpt-sol", a.Target, false, "gpt-sol")
-		return fmt.Sprintf("revision %d and %d history IDs restored; whitelist and alias enforce", after.Revision, len(ids))
+		return fmt.Sprintf("revision %d and %d history IDs restored; alias/listing work within 1s of readiness; status retained", after.Revision, len(ids))
 	})
 }
 

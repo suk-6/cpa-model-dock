@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
-import { decodeStorage, readManagementKey, pathToField, policyPayload, reconcileAliasRules, diffJSON, escapeHTML, familyExamples } from '../../assets/app.js';
-import { messages, translate } from '../../assets/i18n.js';
+import { decodeStorage, readManagementKey, pathToField, policyPayload, reconcileAliasRules, diffJSON, escapeHTML, familyExamples, restoreOptions, catalogNotice } from '../../assets/app.js';
+import { messages, translate, translateServer } from '../../assets/i18n.js';
 
 const host = 'localhost:8787', userAgent = 'Management Center / 한국어';
 function encode(value) {
@@ -138,4 +138,57 @@ test('server text uses codes in both languages and preserves unknown message fal
   assert.equal(translateServer('ko',combined),'변경 3건: 별칭 sol 자동 업데이트: 6.1 → 6.10; 허용 목록 사용; 정책 기본 설정 변경');
   assert.match(translateServer('en',combined),/^3 changes: Automatically updated sol: 6.1 → 6.10/);
   assert.equal(escapeHTML(translateServer('ko',{code:'alias_created',params:{alias:'<img>',target:'x'}})),'별칭 생성: &lt;img&gt; → x');
+});
+
+test('alias settings history localizes every changed field, nullable override, and bounded values', () => {
+  const detail = {code:'alias_changed',params:{alias:'sol',fields:[
+    {field:'mode',from:'pinned',to:'auto'},
+    {field:'rewrite_response_model',from:null,to:true},
+    {field:'expose_original',from:true,to:false},
+  ]}};
+  assert.equal(translateServer('en',detail),'Changed alias sol: Update mode: Pinned → Automatic; Response name: Use default → On; Allow the original model name: On → Off');
+  assert.equal(translateServer('ko',detail),'별칭 sol 변경: 업데이트 방식: 고정 → 자동; 응답 이름: 기본값 사용 → 켜짐; 원래 모델 이름 허용: 켜짐 → 꺼짐');
+  detail.params.fields = [{field:'provider',from:'',to:'<img>'.repeat(30)},
+    {field:'auto.family',from:'old family',to:'new family'},
+    {field:'auto.include_prerelease',from:false,to:true},
+    {field:'auto.health_check',from:true,to:false}];
+  for (const lang of ['en','ko']) {
+    const text = translateServer(lang,detail);
+    assert.match(text,/…/); assert.doesNotMatch(text,/<img>.*<img>.*<img>.*<img>.*<img>.*<img>.*<img>.*<img>.*<img>.*<img>.*<img>.*<img>.*<img>/);
+    assert.ok(text.includes(translate(lang,'moreChanges',{count:1})));
+    assert.ok(text.includes('old family → new family'));
+    assert.ok(!escapeHTML(text).includes('<img>'));
+  }
+});
+
+test('restore dialog offers pinning only for currently automatic aliases', () => {
+  const entry = {kind:'alias_target',before:{alias_id:'a',target:'v1'},after:{alias_id:'a',target:'v2'}};
+  assert.deepEqual(restoreOptions(entry,{aliases:[{id:'a',mode:'auto'}]}),[{label:'restoreAndPin',pin:true},{label:'restoreOnly',pin:false}]);
+  for (const saved of [{aliases:[{id:'a',mode:'pinned'}]},{aliases:[]},null]) assert.deepEqual(restoreOptions(entry,saved),[{label:'restore',pin:false}]);
+  assert.deepEqual(restoreOptions({...entry,kind:'state'},{aliases:[{id:'a',mode:'auto'}]}),[{label:'restore',pin:false}]);
+  assert.match(translate('en','restoreAutoHelp'),/target may change again/);
+  assert.match(translate('ko','restoreAutoHelp'),/다시 변경될 수/);
+});
+
+test('restore history identifies the alias and target or the historical policy time', () => {
+  const restored = {code:'alias_target_restored',params:{alias:'sol',target:'v1',pinned:true}};
+  assert.equal(translateServer('en',restored),'Restored alias sol target to v1');
+  assert.equal(translateServer('ko',restored),'별칭 sol 대상 복원: v1');
+  for (const lang of ['en','ko']) {
+    const text = translateServer(lang,{code:'policy_restored',params:{at:'2026-10-27T12:00:00Z'}});
+    assert.ok(text.includes('2026')); assert.doesNotMatch(text,/entry_id|\{at\}/);
+  }
+});
+
+test('catalog notices prefer structured warnings and preserve failure and stale fallbacks', () => {
+  const warning = {code:'no_models_using_last_known',params:{},message:'server fallback'};
+  assert.deepEqual(catalogNotice({warning_detail:warning,error:'fallback'}),warning);
+  assert.deepEqual(catalogNotice({warning:'using_persisted_catalog'}),{code:'using_persisted_catalog'});
+  assert.deepEqual(catalogNotice({error_detail:{code:'catalog_unavailable'}}),{code:'catalog_unavailable'});
+  assert.equal(catalogNotice({error:'Older server error'}),'Older server error');
+  assert.deepEqual(catalogNotice({stale:true}),{code:'catalog_stale'});
+  assert.equal(catalogNotice({ok:true}),null);
+  for (const code of ['using_persisted_catalog','no_models_using_last_known','no_models','catalog_unavailable_using_last_known','catalog_cache_unavailable','catalog_stale']) {
+    for (const lang of ['en','ko']) { const text = translateServer(lang,{code}); assert.ok(text && text !== code); }
+  }
 });

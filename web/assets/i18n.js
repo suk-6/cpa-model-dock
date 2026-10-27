@@ -21,7 +21,7 @@ const rows = {
   savedPolicy: ['Saved policy', '저장된 정책'], draftPreview: ['Draft preview', '초안 미리보기'],
   mappings: ['Active alias mappings', '활성 별칭 연결'], updates: ['Recent automatic updates', '최근 자동 업데이트'],
   catalog: ['Model catalog', '모델 목록'], lastRefresh: ['Last refreshed', '마지막 새로고침'],
-  healthy: ['Up to date', '최신 상태'], catalogFailed: ['Refresh failed; the last available catalog is retained.', '새로고침에 실패하여 마지막 모델 목록을 유지합니다.'],
+  healthy: ['Up to date', '최신 상태'], catalogStale: ['Using the last available catalog', '마지막 모델 목록 사용 중'], catalogPending: ['Waiting for models', '모델 대기 중'], lastGood: ['Last available catalog', '마지막 정상 모델 목록'], catalogFailed: ['Refresh failed; the last available catalog is retained.', '새로고침에 실패하여 마지막 모델 목록을 유지합니다.'],
   warnings: ['Needs attention', '확인이 필요합니다'], guard: ['Policy coverage', '정책 적용 범위'],
 
   partialCoverage: ['Proxy rules needed', '프록시 규칙 필요'],
@@ -75,6 +75,9 @@ const rows = {
   viewDiff: ['View changes', '변경 내용 보기'], before: ['Before', '이전'], after: ['After', '이후'],
   restore: ['Restore previous version', '이전 버전 복원'], restoreTitle: ['Restore this previous version?', '이전 버전을 복원할까요?'],
   restoreHelp: ['Restore the “Before” version of this entry. The restoration is saved immediately and recorded as a new change.', '이 항목의 “이전” 버전을 복원합니다. 복원은 즉시 저장되고 새 이력으로 기록됩니다.'],
+  restoreAndPin: ['Restore and pin', '복원 후 고정'], restoreOnly: ['Restore only', '복원만 하기'],
+  restoreAutoHelp: ['This alias updates automatically. Restore and pin keeps the restored target. Restore only keeps automatic updates on, so the target may change again.', '이 별칭은 자동 업데이트 중입니다. 복원 후 고정하면 복원한 대상을 유지합니다. 복원만 하면 자동 업데이트가 유지되어 대상이 다시 변경될 수 있습니다.'],
+  moreChanges: ['+{count} more', '+{count}건 더'], responseName: ['Response name', '응답 이름'], noProvider: ['Any provider', '모든 제공자'],
   more: ['Load earlier changes', '이전 이력 더 보기'], diff: ['Changes', '변경 내용'], unchanged: ['No changes', '변경 없음'],
   unsaved: ['You have unsaved changes', '저장하지 않은 변경이 있습니다'], save: ['Save changes', '변경 저장'], discard: ['Discard', '변경 취소'],
   discardTitle: ['Discard your draft?', '초안을 취소할까요?'], discardHelp: ['Your unsaved edits will be lost.', '저장하지 않은 편집 내용이 사라집니다.'],
@@ -110,7 +113,7 @@ const rows = {
   "server_alias_disabled": ["Disabled alias {alias}", "별칭 사용 중지: {alias}"],
   "server_alias_target_changed": ["Changed {alias} target: {from} → {to}", "별칭 {alias} 대상 변경: {from} → {to}"],
   "server_alias_target_auto_updated": ["Automatically updated {alias}: {from} → {to}", "별칭 {alias} 자동 업데이트: {from} → {to}"],
-  "server_alias_changed": ["Changed alias {alias} settings", "별칭 {alias} 설정 변경"],
+  "server_alias_changed": ["Changed alias {alias}: {fields}", "별칭 {alias} 변경: {fields}"],
   "server_rule_added": ["Added allow rule for {value}", "허용 규칙 추가: {value}"],
   "server_rule_removed": ["Removed allow rule for {value}", "허용 규칙 삭제: {value}"],
   "server_rule_enabled": ["Enabled allow rule for {value}", "허용 규칙 사용: {value}"],
@@ -120,6 +123,15 @@ const rows = {
   "server_whitelist_disabled": ["Whitelist disabled; available models are allowed unless hidden by an alias.", "허용 목록을 사용하지 않아 별칭으로 숨긴 모델 외의 사용 가능한 모델을 허용합니다."],
   "server_settings_changed": ["Changed policy preferences", "정책 기본 설정 변경"],
   "server_families_changed": ["Changed custom model families", "사용자 지정 모델 계열 변경"],
+  "server_policy_restored": ["Restored policy from {at}", "{at}의 정책 복원"],
+  "server_alias_target_restored": ["Restored alias {alias} target to {target}", "별칭 {alias} 대상 복원: {target}"],
+  "server_invalid_restore_pin": ["Pinning is only available for alias target restores.", "별칭 대상 복원에서만 고정할 수 있습니다."],
+  "server_using_persisted_catalog": ["Using the last saved model list while waiting for available models. Refresh again shortly.", "사용 가능한 모델을 기다리는 동안 마지막으로 저장한 모델 목록을 사용합니다. 잠시 후 새로고침하세요."],
+  "server_no_models_using_last_known": ["No available models were returned. The last model list is kept; check provider connections and refresh again.", "사용 가능한 모델이 없어 마지막 모델 목록을 유지합니다. 제공자 연결을 확인하고 다시 새로고침하세요."],
+  "server_no_models": ["No models are available yet. Check provider connections and refresh again.", "아직 사용 가능한 모델이 없습니다. 제공자 연결을 확인하고 다시 새로고침하세요."],
+  "server_catalog_unavailable_using_last_known": ["The model list could not be refreshed. Using the last available list; check provider connections and try again.", "모델 목록을 새로고침하지 못해 마지막 목록을 사용합니다. 제공자 연결을 확인하고 다시 시도하세요."],
+  "server_catalog_cache_unavailable": ["The saved model list could not be read or updated. Check storage access and refresh again.", "저장된 모델 목록을 읽거나 갱신하지 못했습니다. 저장소 접근을 확인하고 다시 새로고침하세요."],
+  "server_catalog_stale": ["Using the last available model list. Refresh again to check availability.", "마지막 모델 목록을 사용 중입니다. 사용 가능 여부를 확인하려면 다시 새로고침하세요."],
   "server_restored": ["Restored the version before entry {entry_id}", "이력 {entry_id} 이전 버전 복원"],
   "server_changes": ["{count} changes: {changes}", "변경 {count}건: {changes}"],
   "server_policy_unchanged": ["Saved policy with no changes", "변경 없이 정책 저장"],
@@ -224,6 +236,25 @@ export function translateServer(lang, value) {
   if (value.code === 'alias_target_unavailable' && value.params?.alias) key = 'server_alias_target_unavailable_named';
   if (!Object.hasOwn(messages.en, key)) return value.message || value.code || '';
   const params = {...value.params};
+  const shorten = raw => { const chars = [...String(raw ?? '')]; return chars.length > 60 ? chars.slice(0, 59).join('') + '…' : chars.join(''); };
+  if (value.code === 'policy_restored' && params.at) {
+    const at = new Date(params.at);
+    if (!Number.isNaN(at.getTime())) params.at = new Intl.DateTimeFormat(lang === 'ko' ? 'ko-KR' : 'en-US', {dateStyle:'medium',timeStyle:'short'}).format(at);
+  }
+  if (value.code === 'alias_changed') {
+    const labels = {mode:'mode',provider:'provider',expose_original:'expose',rewrite_response_model:'responseName','auto.family':'family','auto.include_prerelease':'includePrerelease','auto.health_check':'healthCheck'};
+    const display = (field, raw) => {
+      if (raw == null) return translate(lang,'default');
+      if (typeof raw === 'boolean') return translate(lang,raw ? 'on' : 'off');
+      if (field === 'mode' && ['pinned','auto'].includes(raw)) return translate(lang,raw);
+      if (field === 'provider' && raw === '') return translate(lang,'noProvider');
+      return shorten(raw);
+    };
+    const fields = Array.isArray(params.fields) ? params.fields : [];
+    params.fields = fields.slice(0,3).map(field => `${labels[field.field] ? translate(lang,labels[field.field]) : field.field}: ${display(field.field,field.from)} → ${display(field.field,field.to)}`).join('; ');
+    if (fields.length > 3) params.fields += '; ' + translate(lang,'moreChanges',{count:fields.length-3});
+    if (!fields.length) return value.message || translate(lang,'name') + ': ' + (params.alias ?? '');
+  }
   if (value.code === 'changes') params.changes = (Array.isArray(params.changes) ? params.changes : []).slice(0, 3).map(change => translateServer(lang, change)).join('; ') + (params.count > 3 ? ' …' : '');
   return translate(lang, key, params);
 }

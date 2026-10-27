@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"github.com/suk-6/cpa-model-dock/internal/autoupdate"
 	"github.com/suk-6/cpa-model-dock/internal/catalog"
 	"github.com/suk-6/cpa-model-dock/internal/hooks"
@@ -19,14 +21,12 @@ import (
 	"github.com/suk-6/cpa-model-dock/internal/mgmt"
 	"github.com/suk-6/cpa-model-dock/internal/policy"
 	"github.com/suk-6/cpa-model-dock/internal/store"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"gopkg.in/yaml.v3"
 )
 
 const pluginID = "cpa-model-dock"
 
-var pluginVersion = "0.1.1"
+var pluginVersion = "0.1.2"
 
 const healthProbeTimeout = 5 * time.Second
 
@@ -77,6 +77,7 @@ type application struct {
 	hooks        *hooks.Hooks
 	host         hostabi.Caller
 	status       map[string]autoupdate.Status
+	statusPath   string
 	workCtx      context.Context
 	cancel       context.CancelFunc
 	baseInterval time.Duration
@@ -92,8 +93,9 @@ func newApplication(dir string, host hostabi.Caller) (*application, error) {
 		return nil, e
 	}
 	workCtx, cancel := context.WithCancel(context.Background())
-	a := &application{workCtx: workCtx, cancel: cancel, current: &atomic.Pointer[policy.Snapshot]{}, store: disk, catalog: catalog.New(host), host: host, status: map[string]autoupdate.Status{}}
-	a.current.Store(policy.New(state, policy.Catalog{Models: []policy.Model{}}, valid))
+	a := &application{workCtx: workCtx, cancel: cancel, current: &atomic.Pointer[policy.Snapshot]{}, store: disk, catalog: catalog.NewPersistent(host, dir), host: host, statusPath: filepath.Join(dir, aliasStatusFilename)}
+	a.current.Store(policy.New(state, a.catalog.Snapshot(), valid))
+	a.status = loadAliasStatus(a.statusPath, a.current.Load())
 	a.hooks = hooks.New(a.current.Load)
 	return a, nil
 }
@@ -117,10 +119,15 @@ func (a *application) save(expected int64, state policy.State, actor, kind, summ
 	}
 	a.publish(policy.New(saved, snap.CatalogCopy(), true))
 	a.setInterval(saved.Settings)
-	a.status = map[string]autoupdate.Status{}
+	changed := a.reconcileAliasStatus(snap, a.current.Load())
+	a.persistAliasStatus()
+	a.queueAliasEvaluation(changed)
 	return saved, nil
 }
 func (a *application) restore(expected int64, id, scope string) (policy.State, error) {
+	return a.restorePinned(expected, id, scope, false)
+}
+func (a *application) restorePinned(expected int64, id, scope string, pin bool) (policy.State, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.workCtx.Err() != nil {
@@ -146,23 +153,29 @@ func (a *application) restore(expected int64, id, scope string) (policy.State, e
 	if scope != found.Kind {
 		return policy.State{}, store.ErrInvalidScope
 	}
+	if pin && scope != "alias_target" {
+		return policy.State{}, store.ErrInvalidScope
+	}
 	draft := found.Before
 	if scope == "alias_target" {
 		draft = snap.StateCopy()
-		oldTargets := map[string]string{}
+		oldAliases := map[string]policy.Alias{}
 		for _, alias := range found.Before.Aliases {
-			oldTargets[alias.ID] = alias.Target
+			oldAliases[alias.ID] = alias
 		}
 		matched := false
 		for _, alias := range found.After.Aliases {
-			old, exists := oldTargets[alias.ID]
-			if !exists || old == alias.Target || (aliasID != "" && aliasID != alias.ID) {
+			previous, exists := oldAliases[alias.ID]
+			if !exists || (previous.Target == alias.Target && previous.Mode == alias.Mode) || (aliasID != "" && aliasID != alias.ID) {
 				continue
 			}
 			present := false
 			for i := range draft.Aliases {
 				if draft.Aliases[i].ID == alias.ID {
-					draft.Aliases[i].Target = old
+					draft.Aliases[i].Target = previous.Target
+					if pin {
+						draft.Aliases[i].Mode = "pinned"
+					}
 					present = true
 					matched = true
 				}
@@ -180,17 +193,18 @@ func (a *application) restore(expected int64, id, scope string) (policy.State, e
 	if details := mgmt.ValidateState(draft, snap.CatalogCopy()); len(details) > 0 {
 		return policy.State{}, validationFailure{details}
 	}
-	restored, e := a.store.Save(expected, draft, "user", scope, "Restored before history entry "+id)
+	sourceAt := found.Before.UpdatedAt
+	if sourceAt.IsZero() {
+		sourceAt = found.At
+	}
+	restored, e := a.store.SaveRestored(expected, draft, scope, sourceAt, aliasID)
 	if e != nil {
 		return policy.State{}, e
 	}
 	a.publish(policy.New(restored, snap.CatalogCopy(), true))
 	a.setInterval(restored.Settings)
-	if scope == "state" {
-		a.status = map[string]autoupdate.Status{}
-	} else {
-		delete(a.status, aliasID)
-	}
+	a.reconcileAliasStatus(snap, a.current.Load())
+	a.persistAliasStatus()
 	return restored, nil
 }
 
@@ -337,6 +351,7 @@ func (a *application) evaluate(ctx context.Context, expected *int64, generation 
 				a.status[k] = v
 			}
 		}
+		a.persistAliasStatus()
 	})
 	if !fresh {
 		return nil, store.ErrRevisionConflict
@@ -394,7 +409,7 @@ func (a *application) stop() {
 func (a *application) close() { a.stop(); a.hooks.Close() }
 func (a *application) management(schema uint32, guard bool) *mgmt.Handler {
 	return mgmt.New(mgmt.Config{Current: a.current.Load, Save: a.save, Refresh: a.refresh, Check: a.check,
-		History: a.managementHistory, Restore: a.restore,
+		History: a.managementHistory, Restore: a.restore, RestorePinned: a.restorePinned,
 		Version: pluginVersion, HostSchema: schema, Guard: guard, CheckRevision: a.checkRevision, RefreshRevision: a.refreshRevision,
 		AliasStatus: func() any {
 			a.mu.Lock()
@@ -425,7 +440,7 @@ func (a *application) managementHistory(limit int, before string) any {
 			return map[string]any{"id": id, "at": entry.At, "actor": entry.Actor, "kind": entry.Kind, "summary": detail.Message, "summary_detail": detail, "before": old, "after": next}
 		}
 		if entry.Kind == "state" {
-			rows = append(rows, row(entry.ID, entry.Before, entry.After, policy.HistorySummary(entry.Before, entry.After, entry.Actor, entry.Summary)))
+			rows = append(rows, row(entry.ID, entry.Before, entry.After, policy.HistoryEntrySummary(entry.Before, entry.After, entry.Actor, entry.Summary, entry.SummaryDetail)))
 			continue
 		}
 		old := map[string]policy.Alias{}
@@ -435,9 +450,14 @@ func (a *application) managementHistory(limit int, before string) any {
 		aliases := append([]policy.Alias{}, entry.After.Aliases...)
 		sort.Slice(aliases, func(i, j int) bool { return aliases[i].ID < aliases[j].ID })
 		for _, alias := range aliases {
-			if previous, exists := old[alias.ID]; exists && previous.Target != alias.Target {
-				detail := policy.HistorySummary(policy.State{Aliases: []policy.Alias{previous}}, policy.State{Aliases: []policy.Alias{alias}}, entry.Actor, entry.Summary)
-				rows = append(rows, row(entry.ID+":"+alias.ID, map[string]any{"alias_id": alias.ID, "target": previous.Target}, map[string]any{"alias_id": alias.ID, "target": alias.Target}, detail))
+			if previous, exists := old[alias.ID]; exists && (previous.Target != alias.Target || previous.Mode != alias.Mode) {
+				detail := policy.HistoryEntrySummary(policy.State{Aliases: []policy.Alias{previous}}, policy.State{Aliases: []policy.Alias{alias}}, entry.Actor, entry.Summary, entry.SummaryDetail)
+				before := map[string]any{"alias_id": alias.ID, "target": previous.Target}
+				after := map[string]any{"alias_id": alias.ID, "target": alias.Target}
+				if previous.Mode != alias.Mode {
+					before["mode"], after["mode"] = previous.Mode, alias.Mode
+				}
+				rows = append(rows, row(entry.ID+":"+alias.ID, before, after, detail))
 			}
 		}
 	}

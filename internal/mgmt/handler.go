@@ -9,10 +9,10 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"github.com/suk-6/cpa-model-dock/internal/policy"
 	"github.com/suk-6/cpa-model-dock/internal/store"
 	"github.com/suk-6/cpa-model-dock/web"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 const (
@@ -35,15 +35,18 @@ var assets = map[string]string{
 // Check must be side-effect free when dryRun is true. Mutation callbacks are serialized
 // within this handler; their owners must also coordinate background writers.
 type Config struct {
-	Current    func() *policy.Snapshot
-	Save       func(expected int64, state policy.State, actor, kind, summary string) (policy.State, error)
-	Refresh    func(context.Context) policy.Catalog
-	Check      func(context.Context, string, bool) (any, error)
-	History    func(limit int, before string) any
-	Restore    func(expected int64, entryID, scope string) (policy.State, error)
-	Version    string
-	HostSchema uint32
-	Guard      bool
+	Current func() *policy.Snapshot
+	Save    func(expected int64, state policy.State, actor, kind, summary string) (policy.State, error)
+	Refresh func(context.Context) policy.Catalog
+	Check   func(context.Context, string, bool) (any, error)
+	History func(limit int, before string) any
+	Restore func(expected int64, entryID, scope string) (policy.State, error)
+	// RestorePinned atomically restores an alias target and optionally pins its mode.
+	// It takes precedence over Restore, which remains compatible for unpinned restores.
+	RestorePinned func(expected int64, entryID, scope string, pin bool) (policy.State, error)
+	Version       string
+	HostSchema    uint32
+	Guard         bool
 	// AliasStatus optionally supplies cached runtime status without evaluating aliases.
 	// If absent, read routes report not_checked without evaluating aliases.
 	AliasStatus func() any
@@ -234,17 +237,26 @@ func (h *Handler) dispatch(ctx context.Context, path string, req pluginapi.Manag
 		return h.check(ctx, body, false, s)
 	case "/history/restore":
 		var entryID, scope string
+		var pin bool
 		details = append(field(body, "entry_id", &entryID), field(body, "scope", &scope)...)
+		details = append(details, field(body, "pin", &pin)...)
 		if strings.TrimSpace(entryID) == "" {
 			details = append(details, detail("entry_id", "required_entry_id", "A history entry is required"))
 		}
 		if scope != "state" && scope != "alias_target" {
 			details = append(details, detail("scope", "invalid_restore_scope", "Scope must be state or alias_target"))
 		}
+		if pin && scope != "alias_target" {
+			details = append(details, detail("pin", "invalid_restore_pin", "Pin is only available when restoring an alias target"))
+		}
 		if len(details) != 0 {
 			return invalid(details)
 		}
-		if h.config.Restore == nil {
+		if h.config.RestorePinned != nil {
+			saved, err := h.config.RestorePinned(expected, entryID, scope, pin)
+			return h.saved(saved, err)
+		}
+		if h.config.Restore == nil || pin {
 			return unavailable()
 		}
 		saved, err := h.config.Restore(expected, entryID, scope)

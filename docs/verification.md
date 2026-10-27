@@ -1,5 +1,40 @@
 # Verification evidence — 2026-10-27
 
+## v0.1.2 validation
+
+Validated the v0.1.2 changes with Go 1.26.10 and the same CPA v8.0.44
+`/tmp/cpa-bin` described below:
+
+- `CC=/usr/bin/clang CGO_ENABLED=1 GOTOOLCHAIN=go1.26.10 GOFLAGS=-mod=mod
+  GOPROXY=off go test -race ./...`: 159 top-level tests and 163 subtests passed
+  across nine packages; no race failures.
+- `go vet ./...`: passed with the same Go/cgo environment.
+- `node --test web/dev/tests/*.test.mjs`: 86 passed, none failed or skipped.
+- `go test -C e2e ./...`: passed.
+- Rebuilt `dist/cpa-model-dock.dylib` using `go build -buildmode=c-shared`, then
+  `CPA_BIN=/tmp/cpa-bin CPA_MODEL_DOCK_LIB="$PWD/dist/cpa-model-dock.dylib"
+  ./e2e/run.sh`: **31 passed, zero failed/skipped**. The new native Codex API-key
+  fixture proves delimiter-free scanner-line Responses rewriting. Restart checks
+  verify alias routing/listing within one second of management readiness and
+  retained evaluation status. Restore-and-pin changes target/mode in one revision
+  and survives a subsequent automatic check. Partial model removal still passes.
+  [Full fake-upstream E2E transcript](evidence/cpa-v8.0.44-v0.1.2-e2e-2026-10-27.txt).
+- `make package`: rebuilt Linux amd64/arm64 and Windows amd64 through Docker,
+  Darwin amd64/arm64 through Apple clang. Five v0.1.2 ZIPs, checksum manifests
+  and a schema-2 registry were generated under `dist/` and verified against bytes,
+  sizes, ZIP root member names and CRCs. Nothing was published.
+- `python3 scripts/abi_smoke.py` passed against both the host dylib and packaged
+  Darwin arm64 dylib. The smoke fixture now matches the existing five resources
+  and required full settings object.
+
+The streaming unit fixture is the supplied redacted Codex capture. No real OAuth
+credentials were used by the new E2E scenarios. Unit tests also cover bootstrap
+retry timing/cancellation, catalog cache sanitization and corruption, empty versus
+partial inventory replacement, alias-status fingerprint invalidation and restore
+history localization.
+
+## Historical v0.1.0 verification
+
 The historical packaging artifacts below were built from source commit `08208c6` in the packaging worktree, using Go 1.26.10
 and CPA v8.0.44 SDK. These artifact hashes describe that earlier build, not a rebuild of the final integration code. The final E2E and unit results below have separate scope.
 Docker 29.8.2 / OrbStack used a Linux arm64 daemon and Debian cross compilers.

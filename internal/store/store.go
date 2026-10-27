@@ -93,7 +93,36 @@ func (s *Store) Save(expected int64, state policy.State, actor, kind, summary st
 	return s.save(expected, state, actor, kind, summary)
 }
 
-func (s *Store) save(expected int64, state policy.State, actor, kind, summary string) (policy.State, error) {
+// SaveRestored records restore intent together with the new policy revision.
+// aliasID identifies the selected alias; empty selects all changed targets.
+func (s *Store) SaveRestored(expected int64, state policy.State, scope string, sourceAt time.Time, aliasID string) (policy.State, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveRestored(expected, state, scope, sourceAt, aliasID)
+}
+
+func (s *Store) saveRestored(expected int64, state policy.State, scope string, sourceAt time.Time, aliasID string) (policy.State, error) {
+	if scope != "state" && scope != "alias_target" {
+		return clone(s.state), ErrInvalidScope
+	}
+	aliases := []policy.Alias{}
+	if scope == "alias_target" {
+		previous := map[string]policy.Alias{}
+		for _, alias := range s.state.Aliases {
+			previous[alias.ID] = alias
+		}
+		for _, alias := range state.Aliases {
+			old, exists := previous[alias.ID]
+			if alias.ID == aliasID || (aliasID == "" && exists && (old.Target != alias.Target || old.Mode != alias.Mode)) {
+				aliases = append(aliases, alias)
+			}
+		}
+	}
+	detail := policy.RestoreHistorySummary(scope, sourceAt, aliases)
+	return s.save(expected, state, "user", scope, detail.Message, detail)
+}
+
+func (s *Store) save(expected int64, state policy.State, actor, kind, summary string, override ...policy.Text) (policy.State, error) {
 	if expected != s.state.Revision {
 		return clone(s.state), ErrRevisionConflict
 	}
@@ -126,6 +155,9 @@ func (s *Store) save(expected int64, state policy.State, actor, kind, summary st
 	}
 	entry := Entry{ID: strconv.FormatInt(next.Revision, 10), At: next.UpdatedAt, Actor: actor, Kind: kind, Summary: summary, Before: clone(s.state), After: next}
 	summaryDetail := policy.HistorySummary(entry.Before, entry.After, actor, summary)
+	if len(override) > 0 {
+		summaryDetail = override[0]
+	}
 	entry.SummaryDetail = &summaryDetail
 	record, err := json.Marshal(entry)
 	if err != nil {
@@ -210,12 +242,16 @@ func (s *Store) History(limit int, before string) []Entry {
 // alias_target restores only targets changed by that entry, preserving all other
 // current settings, aliases and rules. Removed aliases are not resurrected.
 func (s *Store) Restore(expected int64, entryID, scope string) (policy.State, error) {
+	return s.RestorePinned(expected, entryID, scope, false)
+}
+
+func (s *Store) RestorePinned(expected int64, entryID, scope string, pin bool) (policy.State, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if expected != s.state.Revision {
 		return clone(s.state), ErrRevisionConflict
 	}
-	if scope != "state" && scope != "alias_target" {
+	if (scope != "state" && scope != "alias_target") || (pin && scope != "alias_target") {
 		return clone(s.state), ErrInvalidScope
 	}
 	for _, entry := range s.history {
@@ -238,10 +274,13 @@ func (s *Store) Restore(expected int64, entryID, scope string) (policy.State, er
 			for i := range next.Aliases {
 				if target, exists := changed[next.Aliases[i].ID]; exists {
 					next.Aliases[i].Target = target
+					if pin {
+						next.Aliases[i].Mode = "pinned"
+					}
 				}
 			}
 		}
-		return s.save(expected, next, "user", scope, "Restored history entry "+entryID)
+		return s.saveRestored(expected, next, scope, entry.At, "")
 	}
 	return clone(s.state), ErrEntryNotFound
 }

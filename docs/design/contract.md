@@ -147,7 +147,49 @@ Errors (OpenAI-style JSON, Claude/Gemini shapes where the protocol requires):
 `403 model_not_allowed`, `404 model_not_found` for hidden names (do not reveal existence),
 `503 alias_target_unavailable`, `503 policy_unavailable`. Messages never include secrets.
 
+### 3.1 Response model stream rewriting
+
+Rewriting edits only protocol model fields: top-level `model`, Responses
+`response.model`, Claude `message.model`, or Gemini `modelVersion`, including
+supported JSON arrays. It never substitutes model-like text in content, tools,
+IDs or instructions. Raw JSON events and SSE both support arbitrary transport
+fragments, multiple events per chunk and complete events. For CPA scanner-line
+delivery, complete `data:` JSON is rewritten and emitted in that same hook call,
+even without a final newline or blank-line terminator. Metadata (`event:`, `id:`,
+`retry:`, comments and other fields) passes immediately and unchanged; existing
+LF/CRLF/CR bytes and absent endings are preserved. Recognized SSE fields at
+transport boundaries identify delimiter-free scanner lines, as in CPA's framer.
+
+Incomplete object/array JSON waits for more fragments or SSE multiline data,
+subject to the 8 MiB request buffer bound. Malformed object/array JSON, including
+an incomplete value terminated by a blank line, fails closed with one sanitized
+protocol error and suppresses later chunks. Non-JSON text data, JSON scalars,
+empty data and `[DONE]` carry no rewritable model field and pass unchanged.
+Incomplete values at stream end are not leaked; completion releases their buffers.
+No inference hook performs disk or host I/O.
+
 ## 4. Catalog
+
+The last successful non-empty catalog is atomically persisted as `catalog.json` in
+`state-dir`, containing only versioned model IDs, providers, credential counts,
+routability and the last-good timestamp. Startup loads these facts immediately,
+marked `ok:false,stale:true,warning:"using_persisted_catalog"`, while a background
+refresh obtains current registration facts. Corrupt/missing caches never block
+initialization or live recovery. Cached facts are registration evidence, not a
+promise that CPA has already loaded the corresponding executor/credential.
+
+An empty inventory at startup/reconfigure is not authoritative: the poller retries
+after 2s, 4s, then every 8s, until the first fresh non-empty
+snapshot or the configured normal interval has elapsed. Polling then uses its
+normal interval. Retries and host calls never run in inference hooks or block init.
+An empty successful callback result reports `ok:false,warning:"no_models"` without
+cached facts; after a non-empty result it retains the last-good facts with
+`stale:true,warning:"no_models_using_last_known"`. A fresh non-empty inventory
+replaces all facts, including removing individual missing models, and clears stale
+status. Callback failures retain facts as before. `/catalog` and overview.catalog
+expose `stale`, `warning`, `warning_detail:Text|null`, and `last_good_at` separately
+from the attempted `refreshed_at` / `last_refresh_at`; cache I/O warnings are safe,
+localizable codes. No credential tokens, paths, auth IDs or emails are cached.
 
 Background poller (default 5 min, plus on demand) using host callbacks `host.auth.models` and
 `host.auth.list`/`get_runtime`. Snapshot: models → {providers[], credential_count, routable bool}. For routable entries, providers
@@ -160,7 +202,10 @@ and a provider matching CPA's `OpenAICompatibleProviderKey(name)` (normally
 `openai-compatible-<name>`, preserving already-prefixed names and `openai-compatibility`), and are omitted by `auth.list/get_runtime`
 because they have neither a file path nor `runtime_only`. Their positive per-client model
 registrations in `auth.models` count as cached routability evidence; explicit disabled/unavailable
-runtime evidence still wins. Removed/disabled config clients lose registrations during CPA
+runtime evidence still wins. Codex API-key config clients have the same omission;
+the exact `codex:apikey:<12 lowercase hex>[-positive decimal collision suffix]` ID with provider `codex`, a non-empty
+auth index, and registered models supplies the equivalent evidence. No arbitrary
+missing OAuth credential is accepted. Removed/disabled config clients lose registrations during CPA
 reconciliation. No callback snapshot guarantees request-time health or eligibility. Sources:
 `internal/watcher/synthesizer/config.go:synthesizeOpenAICompat`,
 `internal/pluginhost/auth_callbacks.go:buildHostAuthFileEntry/buildHostAuthModels`,
@@ -182,17 +227,17 @@ fallbacks for API consumers. Never derive translation identifiers from message t
 
 | Method | Path | Body/query | Returns (HTTP 200 unless specified below) |
 |---|---|---|---|
-| GET | `/overview` | – | `{plugin_version,host_schema,policy_enabled,whitelist_enabled,counts:{public_models,public_aliases},active_mappings:[{alias,target}],recent_auto_updates:HistoryEntry[],catalog:{last_refresh_at,ok,error,error_detail:Text|null},guard:{enabled,verified,covered:Text[],limitations:Text[]},warnings:Text[]}` |
+| GET | `/overview` | – | `{plugin_version,host_schema,policy_enabled,whitelist_enabled,counts:{public_models,public_aliases},active_mappings:[{alias,target}],recent_auto_updates:HistoryEntry[],catalog:{last_refresh_at,last_good_at,ok,stale,warning,warning_detail:Text|null,error,error_detail:Text|null},guard:{enabled,verified,covered:Text[],limitations:Text[]},warnings:Text[]}` |
 | GET | `/state` | – | `StateView` |
 | PUT | `/state` | full `{revision?,settings,families,aliases,rules}` | `StateView` with new revision |
 | POST | `/validate` | full PUT-shaped draft; revision ignored | `{valid,details:Detail[],preview:{public_models:string[],public_aliases:string[]}}` |
-| GET | `/catalog` | – | `{refreshed_at,ok,error,error_detail:Text|null,models:[{id,providers:string[],credential_count,routable,public,reason:Reason}]}` |
+| GET | `/catalog` | – | `{refreshed_at,last_good_at,ok,stale,warning,warning_detail:Text|null,error,error_detail:Text|null,models:[{id,providers:string[],credential_count,routable,public,reason:Reason}]}` |
 | POST | `/catalog/refresh` | `{}`; supplied revision ignored | same catalog shape, without revision |
 | POST | `/aliases/check` | `{revision?,alias_id?:string,dry_run?:bool}` | `{results:AliasCheckResult[],revision}` |
 | POST | `/rules/preview` | `{settings?,families?,aliases?,rules?}` | `{rules:[{id,matches:string[]}],public_models:string[],public_aliases:string[]}` |
 | POST | `/explain` | `{model:string,draft?:{settings?,families?,aliases?,rules?}}` | `{allowed,status,code,reason:Reason,steps:Reason[],resolved_target?:string}` |
 | GET | `/history` | query `limit` (default 100, integer 1–1000), `before` (exclusive entry ID) | `{entries:HistoryEntry[],next_before:string|null}` |
-| POST | `/history/restore` | `{entry_id:string,revision?,scope:"state"|"alias_target"}` | `StateView` with new revision |
+| POST | `/history/restore` | `{entry_id:string,revision?,scope:"state"|"alias_target",pin?:bool}` | `StateView` with new revision |
 
 `Text` and `Reason` are exactly `{code:string,params:object,message:string}`.
 `params` is always an object, including `{}` when no parameters are needed.
@@ -311,7 +356,10 @@ Unknown cursors, duplicate cursor/limit parameters, and invalid limits return
 `actor:"user",kind:"state"`; target switches use
 `actor:"auto",kind:"alias_target"`. State before/after values are policy
 snapshots with schema/revision/timestamp but no runtime fields; alias-target
-values are exactly `{alias_id,target}`. Unchanged checks and refreshes add no
+values are `{alias_id,target}`; a restore that also changes mode includes
+`mode` in both before/after so the diff shows automatic → pinned. Restoring
+such an entry still restores only its target and preserves the current mode
+unless `pin:true` is requested. Unchanged checks and refreshes add no
 history. Disk history may retain full policy snapshots internally; management
 projects target entries into these per-alias pairs.
 
@@ -321,8 +369,23 @@ alias-target scope restores only that alias's target in the current policy.
 An absent alias is a 422 `validation_failed` with detail code `alias_not_found`.
 Restore validates before writing, advances from the current revision, and
 appends a new user entry of the restored scope without rolling revision back or
-deleting history. State saves/restores clear all alias runtime status;
-alias-target restore clears only the restored alias's status.
+deleting history. For `alias_target`, optional `pin:true` changes target and
+`mode:"pinned"` atomically in the same revision; it is invalid for `state` scope
+(422 `validation_failed`, detail `invalid_restore_pin` at `pin`).
+For an automatic alias, the UI explains that later checks can advance a restored
+target and offers **Restore and pin to this model** or **Restore only (automatic
+updates may move it again)**. Restore summaries use `alias_target_restored`
+(alias, target) or `policy_restored` (historical timestamp), with English/Korean
+translations, rather than presenting internal history/alias IDs as the summary.
+
+Alias runtime evaluation status is atomically persisted separately from policy.
+Unrelated saves preserve status. Created aliases and changes to evaluation inputs
+(mode, target, auto settings, provider, enabled flag or referenced family
+configuration) invalidate only affected statuses; changed automatic aliases are
+reevaluated asynchronously after publication. Restarts restore statuses only for
+matching alias IDs and evaluation inputs. Every completed non-dry-run evaluation,
+including no-change refresh evaluations, records last_checked_at, candidates and
+reason without adding no-op history. Paid probes remain opt-in and bounded.
 
 
 `summary` remains a complete English string. `summary_detail` describes semantic
@@ -333,6 +396,11 @@ a single change is returned directly. Array order and policy revision/timestamp
 changes are not semantic changes. No-op saves use `policy_unchanged`. New disk
 records persist the detail; legacy full snapshots are sufficient to derive it.
 A record without usable snapshots uses `history_legacy` and `{summary}`.
+Alias edits include changed field names and before/after values in structured
+`alias_changed` params, with localized mode, response-name default/on/off, original
+visibility and auto-setting labels. Long field lists show a concise prefix plus
+the remaining count; the complete structured changes remain available.
+
 
 Changes are ordered by alias ID, then rule ID, then whitelist, other settings,
 and families. For an existing alias, emit rename, enable/disable, target change,
@@ -340,8 +408,10 @@ and finally `alias_changed` only when other fields differ. Creation/deletion is
 one event. Rule enable/disable is followed by `rule_changed` if kind, value, or
 note also differs. Automatic changes use `alias_target_auto_updated`, while user
 edits use `alias_target_changed` (including a user changing a pinned target).
-Restore uses `restored` with the selected opaque entry ID. Each projected alias
-target entry has only that alias's summary, while its before/after remain compact.
+New restores use `alias_target_restored` or `policy_restored` with human-readable
+alias/model or historical time parameters. Legacy `restored` entries remain
+readable. Each projected alias target entry has only that alias's summary, while
+its before/after remain compact.
 
 The deterministic text code/parameter inventory is below. Parameter names in
 braces denote object keys; parameters are strings unless noted. Unlisted
@@ -351,16 +421,20 @@ clients may fall back to `message` for an unknown code.
 | Context | Codes | Params |
 |---|---|---|
 | Attention | `priority_unverified`, `catalog_unavailable`, `policy_unavailable` | `{}` |
+| Catalog readiness/cache | `no_models`, `no_models_using_last_known`, `using_persisted_catalog`, `catalog_unavailable_using_last_known`, `catalog_cache_unavailable` | `{}` |
 | Attention alias | `alias_target_unavailable` | `{alias_id,alias,target}` in overview; `{}` for a policy decision |
 | Covered | `http_model_requests_covered`, `model_lists_covered`, `responses_websocket_initial_covered` | `{}` |
 | Proxy controls | `realtime_proxy_required`, `websocket_messages_proxy_required`, `model_detail_proxy_required`, `admin_api_tool_proxy_required` | `{}` |
 | Alias history | `alias_created` | `{alias_id,alias,target}` |
 | Alias history | `alias_renamed` | `{alias_id,from,to}` (names) |
-| Alias history | `alias_deleted`, `alias_enabled`, `alias_disabled`, `alias_changed` | `{alias_id,alias}` |
+| Alias history | `alias_deleted`, `alias_enabled`, `alias_disabled` | `{alias_id,alias}` |
+| Alias field history | `alias_changed` | `{alias_id,alias,count:number,fields:[{field,from,to}]}` (typed null/bool/string values) |
 | Target history | `alias_target_changed`, `alias_target_auto_updated` | `{alias_id,alias,from,to}` (model IDs) |
 | Rule history | `rule_added`, `rule_removed`, `rule_enabled`, `rule_disabled`, `rule_changed` | `{rule_id,kind,value}` (removed uses old values; others use new) |
 | Policy history | `whitelist_enabled`, `whitelist_disabled`, `settings_changed`, `families_changed`, `policy_unchanged` | `{}` |
-| Restore history | `restored` | `{entry_id}` |
+| Alias restore history | `alias_target_restored` | `{alias_id,alias,target,pinned:bool}` |
+| Policy restore history | `policy_restored` | `{at}` (RFC3339 historical time) |
+| Legacy restore history | `restored` | `{entry_id}` |
 | Multiple changes | `changes` | `{count:number,changes:Text[]}` |
 | Legacy history | `history_legacy` | `{summary}` |
 | Explain step | `normalized`, `resolved_model` | `{model}` |
@@ -385,7 +459,7 @@ preserve semantic differences that must not be collapsed into `required` or
 | `alias_name_conflict`, `alias_catalog_conflict` | Collision with another alias or with a real catalog model, respectively |
 | `invalid_alias_slash` | Alias name contains a slash |
 | `invalid_template_tokens`, `invalid_template_literal`, `invalid_template_expression` | Invalid token counts, literal/adjacent tokens, or expression, respectively |
-| `invalid_restore_scope`, `restore_scope_mismatch` | Invalid scope name or scope not matching the selected entry |
+| `invalid_restore_scope`, `restore_scope_mismatch`, `invalid_restore_pin` | Invalid scope name or scope not matching the selected entry |
 | `unsupported_schema`, `invalid_revision`, `invalid_refresh_interval`, `invalid_id`, `duplicate_id`, `builtin_read_only`, `family_conflict`, `invalid_provider`, `invalid_alias_name`, `invalid_mode`, `invalid_target`, `unknown_target`, `unknown_family`, `provider_conflict`, `alias_target_alias`, `invalid_value`, `invalid_exact`, `invalid_pattern`, `unknown_alias`, `invalid_rule_kind`, `id_unavailable`, `alias_not_found`, `invalid_state` | Domain error identified by code and complete field path |
 
 Error envelopes also include `params:{}`. Parse errors use `invalid_json` with

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/suk-6/cpa-model-dock/internal/policy"
 )
@@ -22,6 +23,69 @@ func openStore(t *testing.T, dir string) *Store {
 		t.Fatal(err)
 	}
 	return s
+}
+
+func TestRestorePinAndSemanticMetadataCommitTogether(t *testing.T) {
+	for _, pin := range []bool{false, true} {
+		dir := t.TempDir()
+		s := openStore(t, dir)
+		state := stateOf(t, s)
+		state.Aliases = []policy.Alias{{ID: "a", Name: "sol", Target: "v1", Mode: "auto", Auto: policy.Auto{Family: "builtin:gpt-sol"}}}
+		state = saveState(t, s, state)
+		state.Aliases[0].Target = "v2"
+		state, err := s.Save(state.Revision, state, "auto", "alias_target", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		entry := s.History(1, "")[0]
+		state.Aliases[0].Target = "v3"
+		state = saveState(t, s, state)
+		restored, err := s.RestorePinned(state.Revision, entry.ID, "alias_target", pin)
+		if err != nil || restored.Revision != state.Revision+1 || restored.Aliases[0].Target != "v2" || (restored.Aliases[0].Mode == "pinned") != pin {
+			t.Fatal(restored, err)
+		}
+		history := s.History(10, "")
+		if len(history) != 4 || history[0].SummaryDetail.Code != "alias_target_restored" || history[0].SummaryDetail.Params["pinned"] != pin {
+			t.Fatal(history)
+		}
+		reopened := openStore(t, dir)
+		reopenedHistory := reopened.History(1, "")
+		if len(reopenedHistory) == 0 {
+			t.Fatal("missing reopened history")
+		}
+		if reopenedHistory[0].SummaryDetail.Params["target"] != "v2" || stateOf(t, reopened).Aliases[0].Mode != restored.Aliases[0].Mode {
+			t.Fatal("restore metadata or pin not persisted")
+		}
+		if _, err := s.RestorePinned(restored.Revision, entry.ID, "state", true); !errors.Is(err, ErrInvalidScope) {
+			t.Fatal(err)
+		}
+		if len(s.History(10, "")) != 4 {
+			t.Fatal("invalid pin wrote history")
+		}
+	}
+}
+
+func TestSaveRestoredPolicyAndUnchangedTargetHaveHumanMetadata(t *testing.T) {
+	s := openStore(t, t.TempDir())
+	state := stateOf(t, s)
+	state.Aliases = []policy.Alias{{ID: "a", Name: "sol", Target: "v1", Mode: "auto", Auto: policy.Auto{Family: "builtin:gpt-sol"}}}
+	state = saveState(t, s, state)
+	at := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	state.Aliases[0].Mode = "pinned"
+	state, err := s.SaveRestored(state.Revision, state, "alias_target", at, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := s.History(1, "")[0].SummaryDetail; d.Code != "alias_target_restored" || d.Params["alias"] != "sol" || d.Params["target"] != "v1" {
+		t.Fatal(d)
+	}
+	_, err = s.SaveRestored(state.Revision, state, "state", at, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := s.History(1, "")[0].SummaryDetail; d.Code != "policy_restored" || d.Params["at"] != "2026-10-27T12:00:00Z" {
+		t.Fatal(d)
+	}
 }
 
 func stateOf(t *testing.T, s *Store) policy.State {

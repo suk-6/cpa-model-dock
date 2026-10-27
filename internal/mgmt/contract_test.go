@@ -8,9 +8,9 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"github.com/suk-6/cpa-model-dock/internal/autoupdate"
 	"github.com/suk-6/cpa-model-dock/internal/policy"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 func keys(t *testing.T, value any, want ...string) map[string]any {
@@ -82,7 +82,7 @@ func TestEndpointResponseFieldShapes(t *testing.T) {
 	o := decode(t, call(t, f.h, "GET", "/overview", nil), 200)
 	keys(t, o, "plugin_version", "host_schema", "policy_enabled", "whitelist_enabled", "counts", "active_mappings", "recent_auto_updates", "catalog", "guard", "warnings")
 	keys(t, o["counts"], "public_models", "public_aliases")
-	keys(t, o["catalog"], "last_refresh_at", "ok", "error", "error_detail")
+	keys(t, o["catalog"], "last_refresh_at", "ok", "error", "error_detail", "stale", "warning", "warning_detail", "last_good_at")
 	guard := keys(t, o["guard"], "enabled", "verified", "limitations", "covered")
 	for _, field := range []string{"warnings"} {
 		for _, item := range o[field].([]any) {
@@ -106,7 +106,7 @@ func TestEndpointResponseFieldShapes(t *testing.T) {
 			body = map[string]any{"revision": "ignored"}
 		}
 		c := decode(t, call(t, f.h, method, path, body), 200)
-		keys(t, c, "refreshed_at", "ok", "error", "error_detail", "models")
+		keys(t, c, "refreshed_at", "ok", "error", "error_detail", "stale", "warning", "warning_detail", "last_good_at", "models")
 		if c["error"] != nil {
 			t.Fatal(c)
 		}

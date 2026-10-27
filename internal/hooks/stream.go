@@ -3,6 +3,7 @@ package hooks
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 
@@ -49,7 +50,7 @@ func (h *Hooks) Stream(req pluginapi.StreamChunkInterceptRequest) (out pluginapi
 		return failedChunk(p, req.SourceFormat)
 	}
 	p.pending = append(p.pending, req.Body...)
-	body, rest, err := rewriteStream(p.pending, req.SourceFormat, p.decision.Alias.Name)
+	body, rest, err := rewriteStream(p.pending, req.SourceFormat, p.decision.Alias.Name, &p.streamParser)
 	if err != nil {
 		p.pending = nil
 		p.failed = true
@@ -72,9 +73,22 @@ func failedChunk(p *requestPin, format string) pluginapi.StreamChunkInterceptRes
 	return pluginapi.StreamChunkInterceptResponse{Body: streamFailure(format), ClearHeaders: append([]string(nil), changedEntityHeaders...)}
 }
 
-func rewriteStream(input []byte, format, alias string) (output, rest []byte, err error) {
+// CPA v8.0.44 Codex emits scanner lines without delimiters (empty separator
+// chunks are discarded by the host). Claude native emits assembled SSE events;
+// OpenAI-compatible assembles frames before translation; Gemini/Vertex emit JSON
+// payloads or translated events; xAI/Antigravity translate scanner lines, and
+// WebSocket executors can emit raw JSON. Never require a blank-line delimiter.
+type streamParser struct {
+	sse             bool
+	passthroughLine bool
+}
+
+func rewriteStream(input []byte, format, alias string, parser *streamParser) (output, rest []byte, err error) {
 	trimmed := bytes.TrimSpace(input)
 	if len(trimmed) == 0 {
+		if bytes.ContainsAny(input, "\r\n") {
+			parser.passthroughLine = false
+		}
 		return bytes.Clone(input), nil, nil
 	}
 	if bytes.Equal(trimmed, []byte("[DONE]")) {
@@ -83,7 +97,7 @@ func rewriteStream(input []byte, format, alias string) (output, rest []byte, err
 	if bytes.HasPrefix([]byte("[DONE]"), trimmed) {
 		return nil, input, nil
 	}
-	if trimmed[0] == '{' || trimmed[0] == '[' {
+	if !parser.sse && (trimmed[0] == '{' || trimmed[0] == '[') {
 		// Chat and WebSocket deliveries are JSON events rather than SSE frames.
 		// Decode complete JSON values while retaining a partial trailing value.
 		remaining := input
@@ -106,19 +120,66 @@ func rewriteStream(input []byte, format, alias string) (output, rest []byte, err
 		output = append(output, remaining...)
 		return output, nil, nil
 	}
+	parser.sse = true
 	for len(input) > 0 {
-		end := sseFrameEnd(input)
-		if end == 0 {
+		// A recognized field at a chunk boundary is also a new scanner line when
+		// the preceding metadata chunk had no delimiter. Otherwise metadata may
+		// be fragmented arbitrarily and must remain opaque (even JSON-looking text).
+		if parser.passthroughLine && startsSSEField(input) {
+			parser.passthroughLine = false
+		}
+		end := bytes.IndexAny(input, "\r\n")
+		next := len(input)
+		if end >= 0 {
+			next = end + 1
+			if input[end] == '\r' && next < len(input) && input[next] == '\n' {
+				next++
+			}
+		}
+		line := input[:next]
+		body := bytes.TrimRight(line, "\r\n")
+		if !parser.passthroughLine && end < 0 && len(body) > 0 && bytes.HasPrefix([]byte("data:"), body) {
 			return output, input, nil
 		}
-		frame, rewriteErr := rewriteSSEFrame(input[:end], format, alias)
+		if parser.passthroughLine || !(bytes.HasPrefix(body, []byte("data:")) || bytes.Equal(body, []byte("data"))) {
+			output = append(output, line...)
+			parser.passthroughLine = end < 0
+			input = input[next:]
+			continue
+		}
+		if end < 0 && bytes.HasPrefix(body, []byte("data:")) && len(bytes.TrimSpace(body[5:])) == 0 {
+			return output, input, nil
+		}
+		frame, rewriteErr := rewriteSSEFrame(line, format, alias)
+		if errors.Is(rewriteErr, io.ErrUnexpectedEOF) {
+			// A JSON value can span transport fragments or SSE data lines. Only this
+			// incomplete value waits; ordinary metadata and complete data never wait.
+			frameEnd := sseFrameEnd(input)
+			next = len(input)
+			if frameEnd > 0 {
+				next = frameEnd
+			}
+			frame, rewriteErr = rewriteSSEFrame(input[:next], format, alias)
+			if errors.Is(rewriteErr, io.ErrUnexpectedEOF) && frameEnd == 0 {
+				return output, input, nil
+			}
+		}
 		if rewriteErr != nil {
-			return nil, nil, rewriteErr
+			return nil, nil, errPayload
 		}
 		output = append(output, frame...)
-		input = input[end:]
+		input = input[next:]
 	}
 	return output, nil, nil
+}
+
+func startsSSEField(input []byte) bool {
+	for _, prefix := range []string{"data:", "event:", "id:", "retry:", ":"} {
+		if bytes.HasPrefix(input, []byte(prefix)) {
+			return true
+		}
+	}
+	return false
 }
 
 // sseFrameEnd honors LF, CRLF and CR line endings and never splits a CRLF
@@ -187,6 +248,26 @@ func rewriteSSEFrame(frame []byte, format, alias string) ([]byte, error) {
 	data := bytes.Join(values, []byte("\n"))
 	if len(bytes.TrimSpace(data)) == 0 || strings.TrimSpace(string(data)) == "[DONE]" {
 		return frame, nil
+	}
+	trimmed := bytes.TrimSpace(data)
+	if bytes.HasPrefix([]byte("[DONE]"), trimmed) {
+		return nil, io.ErrUnexpectedEOF
+	}
+	// Only object/array data carries protocol model fields. Text notifications
+	// and JSON scalars are opaque; malformed object/array JSON fails closed.
+	if trimmed[0] != '{' && trimmed[0] != '[' {
+		return frame, nil
+	}
+	var value json.RawMessage
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if decodeErr := decoder.Decode(&value); decodeErr != nil {
+		if errors.Is(decodeErr, io.ErrUnexpectedEOF) || errors.Is(decodeErr, io.EOF) {
+			return nil, io.ErrUnexpectedEOF
+		}
+		return nil, errPayload
+	}
+	if len(bytes.TrimSpace(data[decoder.InputOffset():])) != 0 {
+		return nil, errPayload
 	}
 	encoded, err := rewriteModel(data, format, alias)
 	if err != nil {

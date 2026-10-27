@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.2 — 2026-10-27
+
+- Fix Responses streaming with response-name rewriting for Codex scanner lines,
+  fragmented JSON and mixed SSE chunks; preserve metadata and line endings.
+- Retry empty startup inventories and persist the sanitized last-known catalog;
+  retain it with a visible warning on entirely empty refreshes. Recognize native
+  Codex API-key config registrations omitted from CPA's runtime inventory.
+- Persist alias evaluation times, candidates and reasons across unrelated edits
+  and restarts; reevaluate changed automatic settings asynchronously.
+- Show changed alias fields and before/after values in English/Korean history.
+- Show human-readable restore summaries and offer restore-and-pin for automatic
+  aliases, with a revisioned `pin:true` restore option.
+
 ## 0.1.1 — 2026-10-27
 
 - Fix the Web UI failing with `crypto.randomUUID is not a function` when adding

@@ -45,6 +45,7 @@ type harness struct {
 	log                                             *os.File
 	rows                                            []row
 	noPlugin                                        bool
+	codex                                           bool
 	routable                                        map[string]bool
 	guardBaseline                                   map[string]response
 }
@@ -214,6 +215,13 @@ func (h *harness) writeConfig() {
 		"routing":    map[string]any{"force-model-prefix": false, "retry": map[string]any{"request-retry": 0, "max-retry-interval": 0}},
 		"api-keys":   map[string]any{"openai-compatibility": providers},
 		"plugins":    map[string]any{"enabled": !h.noPlugin, "dir": filepath.Join(h.dir, "plugins"), "configs": map[string]any{"cpa-model-dock": map[string]any{"enabled": true, "priority": 1000, "state-dir": filepath.Join(h.dir, "state"), "catalog-refresh-interval": "5m", "guard-uncovered-endpoints": true}}},
+	}
+	if h.codex {
+		cfg["api-keys"].(map[string]any)["codex"] = []any{map[string]any{
+			"name": "e2e-codex", "base-url": h.upstream.url + "/v1", "request-retry": 0,
+			"models": []any{map[string]any{"name": "gpt-6.1-sol", "alias": "gpt-6.1-sol"}},
+			"keys":   []any{map[string]any{"api-key": "e2e-codex-key", "proxy-url": "direct"}},
+		}}
 	}
 	// JSON is a YAML subset; encode strings/paths without hand-built YAML quoting.
 	data, err := json.MarshalIndent(cfg, "", "  ")

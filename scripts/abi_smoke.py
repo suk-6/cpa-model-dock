@@ -74,8 +74,8 @@ def main():
                 assert registration["capabilities"]["executor"]
                 assert not registration["capabilities"]["frontend_auth_provider_exclusive"]
             routes = call("management.register", {"BasePath": "/v0/management", "ResourceBasePath": "/v0/resource/plugins/cpa-model-dock"})
-            assert len(routes["routes"]) == 11 and len(routes["resources"]) == 4
-            state = {"revision": 0, "settings": {"whitelist_enabled": True}, "families": [], "aliases": [], "rules": []}
+            assert len(routes["routes"]) == 11 and len(routes["resources"]) == 5
+            state = {"revision": 0, "settings": {"whitelist_enabled": True, "rewrite_response_model": False, "refresh_interval_seconds": 300}, "families": [], "aliases": [], "rules": []}
             put = call("management.handle", {"Method": "PUT", "Path": "/v0/management/plugins/cpa-model-dock/state", "Body": base64.b64encode(json.dumps(state).encode()).decode()})
             assert put["StatusCode"] == 200, put
             denied = call("request.intercept_before", {"RequestID": "abi-smoke", "RequestedModel": "hidden", "Model": "hidden", "SourceFormat": "openai"})

@@ -12,7 +12,11 @@ func historyDetail(row map[string]any) {
 		if detail["params"] == nil {
 			detail["params"] = map[string]any{}
 		}
-		return
+		// Older persisted alias settings summaries lack their field diff. Rebuild
+		// them from snapshots while preserving explicit restore intent.
+		if !historyNeedsFieldDiff(detail) {
+			return
+		}
 	}
 	summary, _ := row["summary"].(string)
 	actor, _ := row["actor"].(string)
@@ -43,4 +47,19 @@ func historyDetail(row map[string]any) {
 	}
 	row["summary_detail"] = detail
 	row["summary"] = detail.Message
+}
+
+func historyNeedsFieldDiff(detail map[string]any) bool {
+	if detail["code"] == "alias_changed" {
+		params, _ := detail["params"].(map[string]any)
+		return params["fields"] == nil
+	}
+	params, _ := detail["params"].(map[string]any)
+	changes, _ := params["changes"].([]any)
+	for _, value := range changes {
+		if child, ok := value.(map[string]any); ok && historyNeedsFieldDiff(child) {
+			return true
+		}
+	}
+	return false
 }

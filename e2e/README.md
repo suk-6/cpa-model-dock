@@ -47,7 +47,12 @@ direct/prefixed/native-alias/thinking-suffix routing, the unrelated model, chat 
 complete SSE chunks and model fields, Responses translation, Claude and Gemini
 translation, configured-model removal/reload, and CPA restart with the same upstream
 recorder. In this CPA checkout Responses translates to `/v1/chat/completions`; the fake
-also implements `/v1/responses` JSON/SSE for hosts that use it. The upstream records
+also implements `/v1/responses` JSON/SSE. The native streaming regression temporarily
+configures a Codex API-key group pointing at this local endpoint (v8
+`api-keys.codex`, legacy `codex-api-key`), pins an alias to provider `codex`, and
+asserts that created/in_progress/completed response models all equal the alias.
+Codex strips upstream line endings before interception, exercising the real
+line-chunked path without credentials or outbound inference. The upstream records
 all inference attempts, including attempts at a removed model. Negative policy checks
 require both an allowed denial status/code and **no new upstream call**.
 

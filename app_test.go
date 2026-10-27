@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"github.com/suk-6/cpa-model-dock/internal/autoupdate"
 	"github.com/suk-6/cpa-model-dock/internal/policy"
 	"github.com/suk-6/cpa-model-dock/internal/store"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 func autoState() policy.State {
@@ -21,6 +21,19 @@ func autoState() policy.State {
 	s.Rules = []policy.Rule{{ID: "r_one", Enabled: true, Kind: "alias", Value: "sol"}, {ID: "r_two", Enabled: true, Kind: "alias", Value: "other-sol"}}
 	return s
 }
+
+// Explicit-check and lifecycle tests seed their starting policy directly so
+// automatic evaluation on user saves cannot race the operation under test.
+func seedApplication(a *application, state policy.State) (policy.State, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	snap := a.current.Load()
+	saved, err := a.store.Save(snap.StateCopy().Revision, state, "user", "state", "Configure aliases")
+	if err == nil {
+		a.publish(policy.New(saved, snap.CatalogCopy(), true))
+	}
+	return saved, err
+}
 func TestAutomaticUpdateHistoryRestartAndRestore(t *testing.T) {
 	dir := t.TempDir()
 	a, e := newApplication(dir, fakeHost())
@@ -29,7 +42,7 @@ func TestAutomaticUpdateHistoryRestartAndRestore(t *testing.T) {
 	}
 	defer a.close()
 	a.refresh(context.Background())
-	saved, e := a.save(0, autoState(), "user", "state", "Configure aliases")
+	saved, e := seedApplication(a, autoState())
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -60,7 +73,7 @@ func TestAutomaticUpdateHistoryRestartAndRestore(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer loaded.close()
-	if s := loaded.current.Load(); !s.Available() || s.Decide("sol").Code != "alias_target_unavailable" {
+	if s := loaded.current.Load(); !s.Available() || !s.CatalogCopy().Stale || !s.Decide("sol").Allowed {
 		t.Fatal(s.Decide("sol"))
 	}
 	loaded.refresh(context.Background())

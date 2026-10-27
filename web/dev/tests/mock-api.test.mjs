@@ -365,11 +365,11 @@ test('wire responses use complete state, structured reasons, nullable errors, an
   const initial=await state(); keys(initial,stateKeys);
   const overview=(await call('/overview')).data;
   keys(overview,'plugin_version host_schema policy_enabled whitelist_enabled counts active_mappings recent_auto_updates catalog guard warnings');
-  keys(overview.guard,'enabled verified covered limitations'); keys(overview.catalog,'last_refresh_at ok error error_detail'); assert.equal(overview.catalog.error,null); assert.equal(overview.catalog.error_detail,null);
+  keys(overview.guard,'enabled verified covered limitations'); keys(overview.catalog,'last_refresh_at last_good_at ok stale warning warning_detail error error_detail'); assert.equal(overview.catalog.error,null); assert.equal(overview.catalog.error_detail,null);
   for (const mapping of overview.active_mappings) keys(mapping,'alias target');
   for (const path of ['/catalog','/catalog/refresh']) {
     const catalog=(path.endsWith('refresh') ? await post(path) : await call(path)).data;
-    keys(catalog,'refreshed_at ok error error_detail models');
+    keys(catalog,'refreshed_at last_good_at ok stale warning warning_detail error error_detail models');
     assert.equal(catalog.error,null); assert.equal(catalog.error_detail,null);
     for (const model of catalog.models) { keys(model,'id providers credential_count routable public reason'); reason(model.reason); }
   }
@@ -412,7 +412,7 @@ test('overview keeps actionable warnings separate from guard coverage and report
   assert.deepEqual(failed.error_detail.params, {}); assert.equal(failed.error_detail.code, 'catalog_unavailable');
   assert.deepEqual(Object.keys(failed.error_detail).sort(), ['code', 'message', 'params']);
   const warning = (await call('/overview')).data;
-  assert.deepEqual(warning.warnings.map((text) => text.code), ['priority_unverified', 'catalog_unavailable', 'alias_target_unavailable']);
+  assert.deepEqual(warning.warnings.map((text) => text.code), ['priority_unverified', 'catalog_unavailable_using_last_known', 'alias_target_unavailable']);
   assert.deepEqual(warning.warnings[2].params, { alias_id: 'al_sol', alias: 'gpt-sol', target: 'missing-model' });
   assert.deepEqual(warning.catalog.error, failed.error);
   assert.deepEqual(warning.catalog.error_detail, failed.error_detail);
@@ -437,7 +437,7 @@ test('history derives semantic alias, rule and settings changes, preserving Engl
     ['alias_deleted', (s) => s.aliases.splice(1, 1), { alias_id: 'al_opus', alias: 'opus' }],
     ['alias_disabled', (s) => { s.aliases[1].enabled = false; }, { alias_id: 'al_opus', alias: 'opus' }],
     ['alias_target_changed', (s) => { s.aliases[1].target = 'claude-opus-4-6'; }, { alias_id: 'al_opus', alias: 'opus', from: 'claude-opus-4-5-20251101', to: 'claude-opus-4-6' }],
-    ['alias_changed', (s) => { s.aliases[1].expose_original = false; }, { alias_id: 'al_opus', alias: 'opus' }],
+    ['alias_changed', (s) => { s.aliases[1].expose_original = false; }, { alias_id: 'al_opus', alias: 'opus', count:1, fields:[{field:'expose_original',from:true,to:false}] }],
     ['rule_added', (s) => s.rules.push({ id: 'new_rule', kind: 'exact', value: 'sample', enabled: true }), { rule_id: 'new_rule', kind: 'exact', value: 'sample' }],
     ['rule_removed', (s) => s.rules.splice(0, 1), { rule_id: 'r_sol', kind: 'family', value: 'builtin:gpt-sol' }],
     ['rule_disabled', (s) => { s.rules[0].enabled = false; }, { rule_id: 'r_sol', kind: 'family', value: 'builtin:gpt-sol' }],
@@ -503,8 +503,87 @@ test('auto updates, recent updates and restores carry translatable identities an
   assert.deepEqual((await call('/overview')).data.recent_auto_updates[0], entry);
   await post('/history/restore', { entry_id: entry.id, scope: 'alias_target', revision: checked.revision });
   const restored = (await call('/history')).data.entries[0];
-  assert.equal(restored.summary_detail.code, 'restored'); assert.deepEqual(restored.summary_detail.params, { entry_id: entry.id });
+  assert.equal(restored.summary_detail.code, 'alias_target_restored'); assert.deepEqual(restored.summary_detail.params, { alias_id:'al_sol',alias:'gpt-sol',target:'gpt-6.1-sol',pinned:false });
   assert.equal(restored.summary, restored.summary_detail.message);
+});
+
+test('each alias settings field carries typed before and after values', async (t) => {
+  for (const [field,from,to] of [['mode','pinned','auto'],['provider','','anthropic'],['expose_original',true,false],['rewrite_response_model',null,true],['auto.family','','builtin:claude-opus'],['auto.include_prerelease',false,true],['auto.health_check',false,true]]) {
+    await t.test(field,async t => {
+      const {state,save,call} = await fixture(t);
+      const draft = await state(), alias = draft.aliases[1];
+      // Automatic mode requires a family; seed that independently first.
+      if (field === 'mode') { alias.auto.family = 'builtin:claude-opus'; await save(draft); }
+      const changed = await state();
+      const path = field.split('.'); let row = changed.aliases[1];
+      while (path.length > 1) row = row[path.shift()];
+      row[path[0]] = to;
+      const saved = await save(changed); assert.equal(saved.status,200);
+      const summary = (await call('/history')).data.entries[0].summary_detail;
+      assert.equal(summary.code,'alias_changed');
+      assert.deepEqual(summary.params.fields,[{field,from,to}]); assert.equal(summary.params.count,1);
+    });
+  }
+});
+
+test('restore only preserves automatic updates and restore and pin saves target and mode in one revision', async (t) => {
+  for (const pin of [false,true]) await t.test(String(pin),async t => {
+    const {state,post,call} = await fixture(t);
+    const checked = await post('/aliases/check',{revision:(await state()).revision});
+    const original = await state(), entry = (await call('/history')).data.entries[0];
+    const restored = await post('/history/restore',{revision:original.revision,entry_id:entry.id,scope:'alias_target',pin});
+    assert.equal(restored.status,200); assert.equal(restored.data.revision,checked.data.revision+1);
+    const alias = restored.data.aliases.find(alias=>alias.id === 'al_sol');
+    assert.equal(alias.target,'gpt-6.1-sol'); assert.equal(alias.mode,pin ? 'pinned' : 'auto');
+    assert.deepEqual(alias.auto,original.aliases[0].auto);
+    const entries = (await call('/history')).data.entries;
+    assert.equal(entries.length,2); assert.equal(entries[0].summary_detail.code,'alias_target_restored');
+    assert.equal(entries[0].summary_detail.params.pinned,pin);
+    if (pin) { assert.equal(entries[0].before.mode,'auto'); assert.equal(entries[0].after.mode,'pinned'); }
+    else assert.ok(!Object.hasOwn(entries[0].after,'mode'));
+    const next = await post('/aliases/check',{revision:restored.data.revision});
+    assert.equal(next.data.results[0].last_result,pin ? 'kept' : 'updated');
+  });
+});
+
+test('restore pin validation and conflicts leave policy and history unchanged', async (t) => {
+  const {state,post,call} = await fixture(t);
+  await post('/aliases/check',{revision:(await state()).revision});
+  const original = await state(), entry = (await call('/history')).data.entries[0];
+  for (const [scope,pin] of [['state',true],['alias_target',null],['alias_target','true'],['alias_target',1]]) {
+    const rejected = await post('/history/restore',{revision:original.revision,entry_id:entry.id,scope,pin});
+    assert.equal(rejected.status,422); assert.ok(rejected.data.error.details.some(d=>d.path === 'pin'));
+  }
+  assert.equal((await post('/history/restore',{revision:original.revision-1,entry_id:entry.id,scope:'alias_target',pin:true})).status,409);
+  assert.deepEqual(await state(),original); assert.equal((await call('/history')).data.entries.length,1);
+});
+
+test('state restore history uses the time of the original policy', async t => {
+  const {state,save,post,call} = await fixture(t,{now:()=>new Date('2026-10-27T12:00:00Z')});
+  const initial = await state(), draft = structuredClone(initial); draft.settings.whitelist_enabled = true;
+  const saved = await save(draft), entry = (await call('/history')).data.entries[0];
+  assert.equal((await post('/history/restore',{revision:saved.data.revision,entry_id:entry.id,scope:'state'})).status,200);
+  const detail = (await call('/history')).data.entries[0].summary_detail;
+  assert.equal(detail.code,'policy_restored'); assert.deepEqual(detail.params,{at:initial.updated_at});
+  assert.equal(detail.message,`Restored policy from ${initial.updated_at}`);
+});
+
+test('catalog readiness retains the last good models through empty refreshes and clears warnings on recovery',async t=>{
+  let next = [];
+  const {post,call,state} = await fixture(t,{refreshCatalog:()=>next});
+  const initial = (await call('/catalog')).data, revision = (await state()).revision;
+  const empty = (await post('/catalog/refresh')).data;
+  assert.equal(empty.ok,false); assert.equal(empty.stale,true); assert.equal(empty.warning,'no_models_using_last_known');
+  assert.deepEqual(empty.models,initial.models); assert.equal(empty.last_good_at,initial.last_good_at);
+  assert.equal(empty.warning_detail.code,empty.warning);
+  assert.ok((await call('/overview')).data.warnings.some(w=>w.code === empty.warning));
+  assert.equal((await state()).revision,revision);
+  next = initial.models;
+  const good = (await post('/catalog/refresh')).data;
+  assert.equal(good.ok,true); assert.equal(good.stale,false); assert.equal(good.warning,''); assert.equal(good.warning_detail,null);
+  const first = await fixture(t,{catalog:[],refreshCatalog:()=>[]});
+  const pending = (await first.post('/catalog/refresh')).data;
+  assert.equal(pending.warning,'no_models'); assert.equal(pending.stale,false); assert.equal(pending.ok,false);
 });
 
 test('explain and catalog use stable rule codes with parameters and structured reasons', async (t) => {

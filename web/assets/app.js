@@ -92,6 +92,23 @@ export function parseFamilyName(id, family, includePrerelease = false) {
   if (match.groups.version.split(/[.-]/).some(part => part.length === 8 && validDate(part))) return null;
   return { version: match.groups.version, date: match.groups.date?.replaceAll('-', '') ?? null, prerelease };
 }
+// Target history can be restored while keeping automatic updates, or pinned in
+// the same request. Use saved mode so unsaved edits cannot affect the choice.
+export function restoreOptions(entry, saved) {
+	const aliasID = entry?.before?.alias_id ?? entry?.after?.alias_id;
+	const automatic = entry?.kind === 'alias_target' && saved?.aliases?.some(alias => alias.id === aliasID && alias.mode === 'auto');
+	return automatic ? [{label:'restoreAndPin',pin:true},{label:'restoreOnly',pin:false}] : [{label:'restore',pin:false}];
+}
+
+export function catalogNotice(catalog = {}) {
+	if (catalog.warning_detail) return catalog.warning_detail;
+	if (catalog.warning) return {code:catalog.warning};
+	if (catalog.error_detail) return catalog.error_detail;
+	if (catalog.error) return catalog.error;
+	if (catalog.stale) return {code:'catalog_stale'};
+	return null;
+}
+
 export function familyExamples(family, models) {
   return models.filter(model => parseFamilyName(model.id, family) && (!family.provider || model.providers?.includes(family.provider)));
 }
@@ -142,6 +159,7 @@ function startApp() {
     if (!value || typeof value !== 'object') return value;
     const params = {...value.params};
     if (params.kind === 'family') params.value = families().find(item => item.id === params.value)?.name || params.value;
+    if (Array.isArray(params.fields)) params.fields = params.fields.map(field => field.field === 'auto.family' ? {...field,...Object.fromEntries(['from','to'].map(side => [side,families().find(item => item.id === field[side])?.name || field[side]]))} : field);
     if (Array.isArray(params.changes)) params.changes = params.changes.map(displayText);
     return {...value,params};
   }
@@ -190,7 +208,7 @@ function startApp() {
       <div class="stats">${stat('policy', badge(T(o.policy_enabled ? 'active' : 'unavailable'), o.policy_enabled ? 'good' : 'bad'), true)}${stat('whitelist', T(o.whitelist_enabled ? 'on' : 'off'), true)}${stat('publicModels', E(o.counts?.public_models ?? '—'))}${stat('publicAliases', E(o.counts?.public_aliases ?? '—'))}</div>
       ${arr(o.warnings).length ? `<div class="message warning"><strong>${T('warnings')}</strong><ul>${o.warnings.map(w => `<li>${reason(w)}</li>`).join('')}</ul></div>` : ''}
       <div class="grid"><article class="card"><h3 class="card-title">${T('mappings')}</h3>${arr(o.active_mappings).length ? o.active_mappings.map(m => `<div class="mapping"><strong class="model">${E(m.alias ?? m.name)}</strong><span class="model"><span class="arrow">→</span>${E(m.target ?? m.current_target)}</span></div>`).join('') : `<p class="empty">${T('none')}</p>`}</article>
-      <article class="card"><div class="row between card-title"><h3>${T('catalog')}</h3>${badge(T(c.ok ? 'healthy' : 'catalogFailed'), c.ok ? 'good' : 'warn')}</div><p class="help">${T('lastRefresh')} · ${date(c.last_refresh_at)}</p>${c.error ? `<p class="field-error break">${reason(c.error_detail || c.error)}</p>` : ''}<div class="actions card-title"></div>${btn('refresh-catalog','refreshCatalog')}</article>
+      <article class="card"><div class="row between card-title"><h3>${T('catalog')}</h3>${badge(T(c.warning === 'no_models' ? 'catalogPending' : c.stale ? 'catalogStale' : c.ok ? 'healthy' : 'catalogFailed'), c.ok && !c.stale ? 'good' : 'warn')}</div><p class="help">${T('lastRefresh')} · ${date(c.last_refresh_at)}</p>${c.last_good_at ? `<p class="help">${T('lastGood')} · ${date(c.last_good_at)}</p>` : ''}${catalogNotice(c) ? `<p class="field-error break">${reason(catalogNotice(c))}</p>` : ''}<div class="actions card-title"></div>${btn('refresh-catalog','refreshCatalog')}</article>
       <article class="card auto-updates"><h3 class="card-title">${T('updates')}</h3>${arr(o.recent_auto_updates).length ? o.recent_auto_updates.map(update => `<div class="timeline-item"><p>${summary(update)}</p><span class="help">${date(update.at || update.last_checked_at)}</span></div>`).join('') : `<p class="empty">${T('none')}</p>`}</article>
       <article class="card coverage"><div class="row between card-title"><h3>${T('guard')}</h3>${badge(T('partialCoverage'),'warn')}</div><p class="help">${T('coverageHelp')}</p><div class="coverage-columns"><section><h4>${T('fullyCovered')}</h4><ul class="help">${arr(guard.covered).map(item => `<li>${reason(item)}</li>`).join('')}</ul></section><section><h4>${T('proxyRequired')}</h4><ul class="help">${arr(guard.limitations).map(item => `<li>${reason(item)}</li>`).join('')}</ul></section></div><p class="help">${T('knownLimitsHint')} <span>${T('knownLimits')}</span></p><p class="help">${T('version')}: ${E(o.plugin_version ?? t('unknown'))}</p></article></div>
       <article class="card"><h3 class="card-title">${T('policySettings')}</h3><div class="form-grid">${field('settings.refresh_interval_seconds','interval',textInput('settings.refresh_interval_seconds',state.draft.settings.refresh_interval_seconds,'type="number" min="0" step="1"'),'intervalHelp')}${checkbox('settings.rewrite_response_model','rewriteDefault',state.draft.settings.rewrite_response_model)}</div></article>`;
@@ -231,7 +249,7 @@ function startApp() {
     const path = key => `aliases[${index}].${key}`;
     return `<form id="editor-form"><div class="form-grid">${field(path('name'),'name',textInput(path('name'),alias.name,'required autocomplete="off" spellcheck="false"'))}${checkbox(path('enabled'),'enabled',alias.enabled)}
       ${field(path('mode'),'mode',selectInput(path('mode'),alias.mode,[['pinned',t('pinned')],['auto',t('auto')]]))}${field(path('provider'),'provider',textInput(path('provider'),alias.provider,'autocomplete="off"'))}
-      <div class="span-all">${field(path('target'),'target',textInput(path('target'),alias.target,'required autocomplete="off" spellcheck="false"'))}<label for="model-search">${T('searchModels')}</label><input id="model-search" type="search" value="${E(state.editor.search)}" autocomplete="off"><div id="model-picker" class="picker">${pickerRows()}</div></div>
+      <div class="span-all">${field(path('target'),'target',textInput(path('target'),alias.target,'required autocomplete="off" spellcheck="false"'))}${catalogNotice(state.catalog) ? `<p class="message warning">${reason(catalogNotice(state.catalog))}</p>` : ''}<label for="model-search">${T('searchModels')}</label><input id="model-search" type="search" value="${E(state.editor.search)}" autocomplete="off"><div id="model-picker" class="picker">${pickerRows()}</div></div>
       ${alias.mode === 'auto' ? `<div class="span-all">${field(path('auto.family'),'family',`<select data-field="${path('auto.family')}" required>${familyOptions(alias.auto.family)}</select>`)}${checkbox(path('auto.include_prerelease'),'includePrerelease',alias.auto.include_prerelease)}</div>` : ''}
       <div class="span-all">${checkbox(path('expose_original'),'expose',alias.expose_original,'exposeHelp')}</div>${field(path('rewrite_response_model'),'rewrite',selectInput(path('rewrite_response_model'),alias.rewrite_response_model === null ? 'null' : String(alias.rewrite_response_model),[['null',t('default')],['true',t('on')],['false',t('off')]]))}</div><div class="actions dialog-actions">${btn('close-modal','cancel')}<button type="submit" class="primary">${T('addToDraft')}</button></div></form>`;
   }
@@ -275,6 +293,7 @@ function startApp() {
     if (modal.type === 'editor') body = ({ aliases: aliasEditor, families: familyEditor, rules: ruleEditor })[state.editor.collection]();
     if (modal.type === 'auth-error') body = authPage();
     if (modal.type === 'confirm') body = `<p>${T(modal.help)}</p><div class="actions dialog-actions">${btn('close-modal','cancel')}${btn('confirm',modal.label || 'remove','','primary')}</div>`;
+    if (modal.type === 'restore') body = `<p>${T('restoreHelp')}</p>${modal.choices.length > 1 ? `<p class="message warning">${T('restoreAutoHelp')}</p>` : ''}<div class="actions dialog-actions">${btn('close-modal','cancel')}${modal.choices.map((choice,index) => btn('confirm-restore',choice.label,`data-pin="${choice.pin}"`,index === 0 ? 'primary' : '')).join('')}</div>`;
     if (modal.type === 'diff') body = `${diffView(modal.entry.before,modal.entry.after)}<div class="actions dialog-actions">${btn('close-modal','close')}${btn('restore','restore',`data-index="${modal.index}"`,'primary')}</div>`;
     if (modal.type === 'check') body = `<p class="help">${T('checkHelp')}</p>${arr(modal.results).map(result => `<p class="model">${E(result.current_target)}</p><p>${reason(result.reason)}</p>${candidateList(result.candidates)}`).join('')}<div class="actions dialog-actions">${btn('close-modal','cancel')}${btn('apply-check','applyUpdate',`data-alias-id="${E(modal.aliasId)}"`,'primary')}</div>`;
     if (modal.type === 'conflict') body = `<p>${T('conflictHelp')}</p><div class="actions dialog-actions">${btn('close-modal','close')}${btn('view-server','viewServer')}${btn('reload-server','reloadLose','','primary')}</div>`;
@@ -485,11 +504,15 @@ function startApp() {
     restore: el => {
       if (!requireSaved()) return;
       const entry = state.history[Number(el.dataset.index)];
-      openModal({type:'confirm',title:'restoreTitle',help:'restoreHelp',label:'restore',action:async () => {
-        const saved = await api('/history/restore','POST',{entry_id:entry.id,revision:state.saved.revision,scope:entry.kind});
-        state.saved = saved;state.draft = policyPayload(saved);state.errors = [];render();
-        await loadAll();await getHistory();
-      }});
+      openModal({type:'restore',title:'restoreTitle',entry,choices:restoreOptions(entry,state.saved)});
+    },
+    'confirm-restore': async el => {
+      const {entry,choices} = state.modal;
+      const pin = el.dataset.pin === 'true';
+      if (!choices.some(choice => choice.pin === pin)) return;
+      const saved = await api('/history/restore','POST',{entry_id:entry.id,revision:state.saved.revision,scope:entry.kind,...(pin ? {pin:true} : {})});
+      closeModal(); state.saved = saved;state.draft = policyPayload(saved);state.errors = [];render();
+      await loadAll();await getHistory();
     },
     'view-server': async () => {
       const server = state.modal.server || await api('/state');

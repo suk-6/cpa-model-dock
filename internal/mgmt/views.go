@@ -10,9 +10,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"github.com/suk-6/cpa-model-dock/internal/policy"
 	"github.com/suk-6/cpa-model-dock/internal/store"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 type publicPreview struct {
@@ -109,7 +109,9 @@ func (h *Handler) overview(ctx context.Context, s *policy.Snapshot) any {
 	p := public(s)
 	mappings := []any{}
 	warnings := []any{reasonView("priority_unverified", "Verify plugin priority relative to other installed plugins on the host")}
-	if !catalog.OK {
+	if warning := catalogWarning(catalog); warning != nil {
+		warnings = append(warnings, warning)
+	} else if !catalog.OK {
 		warnings = append(warnings, reasonView("catalog_unavailable", "Could not refresh models; refresh again and check the provider connection"))
 	}
 	if !s.Available() {
@@ -152,7 +154,7 @@ func (h *Handler) overview(ctx context.Context, s *policy.Snapshot) any {
 		"policy_enabled": s.Available(), "whitelist_enabled": state.Settings.WhitelistEnabled,
 		"counts":          map[string]int{"public_models": len(p.PublicModels), "public_aliases": len(p.PublicAliases)},
 		"active_mappings": mappings, "recent_auto_updates": recent,
-		"catalog":  map[string]any{"last_refresh_at": catalog.RefreshedAt, "ok": catalog.OK, "error": nullableError(catalog.Error), "error_detail": catalogError(catalog)},
+		"catalog":  map[string]any{"last_refresh_at": catalog.RefreshedAt, "ok": catalog.OK, "error": nullableError(catalog.Error), "error_detail": catalogError(catalog), "stale": catalog.Stale, "warning": catalog.Warning, "warning_detail": catalogWarning(catalog), "last_good_at": catalog.LastGoodAt},
 		"guard":    map[string]any{"enabled": h.config.Guard, "verified": false, "limitations": limitations, "covered": covered},
 		"warnings": warnings,
 	}
@@ -168,7 +170,7 @@ func catalogView(s *policy.Snapshot, catalog policy.Catalog) any {
 			"routable": model.Routable, "public": model.Routable && d.Allowed, "reason": catalogReason(model, d),
 		})
 	}
-	return map[string]any{"refreshed_at": catalog.RefreshedAt, "ok": catalog.OK, "error": nullableError(catalog.Error), "error_detail": catalogError(catalog), "models": models}
+	return map[string]any{"refreshed_at": catalog.RefreshedAt, "ok": catalog.OK, "error": nullableError(catalog.Error), "error_detail": catalogError(catalog), "stale": catalog.Stale, "warning": catalog.Warning, "warning_detail": catalogWarning(catalog), "last_good_at": catalog.LastGoodAt, "models": models}
 }
 
 func (h *Handler) validate(body object) pluginapi.ManagementResponse {
@@ -392,7 +394,26 @@ func decisionParams(d policy.Decision) map[string]any {
 	}
 	return p
 }
+func catalogWarning(c policy.Catalog) any {
+	switch c.Warning {
+	case "catalog_unavailable_using_last_known":
+		return reasonView(c.Warning, "Could not refresh models; using the last known catalog")
+	case "catalog_cache_unavailable":
+		return reasonView(c.Warning, "Could not read or save the catalog cache; check the state directory permissions")
+	case "using_persisted_catalog":
+		return reasonView(c.Warning, "Using the last known catalog while the server loads models")
+	case "no_models_using_last_known":
+		return reasonView(c.Warning, "No models reported by the server; using the last known catalog")
+	case "no_models":
+		return reasonView(c.Warning, "The server has not reported any models yet; waiting for credentials to load")
+	}
+	return nil
+}
+
 func catalogError(c policy.Catalog) any {
+	if warning := catalogWarning(c); warning != nil {
+		return warning
+	}
 	if c.OK {
 		return nil
 	}

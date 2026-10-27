@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSemanticHistorySummary(t *testing.T) {
@@ -43,6 +44,56 @@ func TestSemanticHistorySummary(t *testing.T) {
 	before.Aliases[0], before.Aliases[1] = before.Aliases[1], before.Aliases[0]
 	if !reflect.DeepEqual(detail, HistorySummary(before, after, "user", "different old prose")) {
 		t.Fatal("summary depends on input array order or old prose")
+	}
+}
+
+func TestAliasSettingHistoryIncludesTypedFieldDiffs(t *testing.T) {
+	before := DefaultState()
+	before.Aliases = []Alias{{ID: "a", Name: "sol", Mode: "pinned", ExposeOriginal: true}}
+	after := cloneState(before)
+	on := true
+	after.Aliases[0].Mode = "auto"
+	after.Aliases[0].ExposeOriginal = false
+	after.Aliases[0].RewriteResponseModel = &on
+	detail := HistorySummary(before, after, "user", "")
+	want := []map[string]any{{"field": "mode", "from": "pinned", "to": "auto"}, {"field": "expose_original", "from": true, "to": false}, {"field": "rewrite_response_model", "from": nil, "to": true}}
+	if detail.Code != "alias_changed" || !reflect.DeepEqual(detail.Params["fields"], want) || detail.Params["count"] != 3 {
+		t.Fatal(detail)
+	}
+	for _, text := range []string{"mode: pinned → automatic", "original name: true → false", "response name: default → on"} {
+		if !strings.Contains(detail.Message, text) {
+			t.Fatal(detail.Message)
+		}
+	}
+	after.Aliases[0].Provider = strings.Repeat("한", 100)
+	after.Aliases[0].Auto.Family = "family"
+	detail = HistorySummary(before, after, "user", "")
+	if !strings.Contains(detail.Message, "+2 more") || !strings.Contains(detail.Message, "…") || strings.Contains(detail.Message, strings.Repeat("한", 61)) {
+		t.Fatal(detail)
+	}
+	// Equivalent override pointers have the same semantic value.
+	before = cloneState(after)
+	after.Aliases[0].RewriteResponseModel = new(bool)
+	*after.Aliases[0].RewriteResponseModel = true
+	if d := HistorySummary(before, after, "user", ""); d.Code != "policy_unchanged" {
+		t.Fatal(d)
+	}
+}
+
+func TestRestoreHistoryHumanSummariesAndProjection(t *testing.T) {
+	at := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	detail := RestoreHistorySummary("state", at, nil)
+	if detail.Code != "policy_restored" || detail.Params["at"] != "2026-10-27T12:00:00Z" {
+		t.Fatal(detail)
+	}
+	aliases := []Alias{{ID: "a", Name: "sol", Target: "v1", Mode: "pinned"}, {ID: "b", Name: "other", Target: "v2", Mode: "auto"}}
+	detail = RestoreHistorySummary("alias_target", at, aliases)
+	projected := HistoryEntrySummary(State{}, State{Aliases: aliases[1:]}, "user", detail.Message, &detail)
+	if projected.Code != "alias_target_restored" || projected.Params["alias"] != "other" || projected.Params["target"] != "v2" || projected.Params["pinned"] != false {
+		t.Fatal(projected)
+	}
+	if !strings.Contains(projected.Message, "Restored alias other target to v2") {
+		t.Fatal(projected)
 	}
 }
 

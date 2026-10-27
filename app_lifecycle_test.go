@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"github.com/suk-6/cpa-model-dock/internal/hostabi"
 	"github.com/suk-6/cpa-model-dock/internal/policy"
 	"github.com/suk-6/cpa-model-dock/internal/store"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 type blockedProbeHost struct {
@@ -81,7 +81,7 @@ func prepareProbeApp(t *testing.T, h hostabi.Caller) *application {
 	a.refresh(context.Background())
 	s := autoState()
 	s.Aliases[0].Auto.HealthCheck = true
-	if _, err = a.save(0, s, "user", "state", "configure paid probe"); err != nil {
+	if _, err = seedApplication(a, s); err != nil {
 		t.Fatal(err)
 	}
 	return a
@@ -154,7 +154,7 @@ func TestOutOfOrderCatalogDeliveryNeverPublishesOrEvaluatesOldSuccess(t *testing
 				t.Fatal(err)
 			}
 			defer a.close()
-			if _, err = a.save(0, autoState(), "user", "state", "auto policy"); err != nil {
+			if _, err = seedApplication(a, autoState()); err != nil {
 				t.Fatal(err)
 			}
 			older := a.catalog.Refresh(context.Background())
@@ -190,7 +190,7 @@ func TestRuntimeLifecycleCancelsManagementReaderBeforeWriteLock(t *testing.T) {
 			a.refresh(context.Background())
 			s := autoState()
 			s.Aliases[0].Auto.HealthCheck = true
-			if _, err := a.save(0, s, "user", "state", "probe policy"); err != nil {
+			if _, err := seedApplication(a, s); err != nil {
 				t.Fatal(err)
 			}
 			checkDone := make(chan []byte, 1)

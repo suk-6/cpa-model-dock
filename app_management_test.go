@@ -6,10 +6,10 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"github.com/suk-6/cpa-model-dock/internal/autoupdate"
 	"github.com/suk-6/cpa-model-dock/internal/mgmt"
 	"github.com/suk-6/cpa-model-dock/internal/policy"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 func TestManagementRefreshCheckAndRestorePolicyRevisions(t *testing.T) {
@@ -22,7 +22,7 @@ func TestManagementRefreshCheckAndRestorePolicyRevisions(t *testing.T) {
 	initial := autoState()
 	initial.Aliases[1].Mode = "auto"
 	initial.Aliases[1].Auto = initial.Aliases[0].Auto
-	saved, err := a.save(0, initial, "user", "state", "Configure aliases")
+	saved, err := seedApplication(a, initial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestManagementRefreshCheckAndRestorePolicyRevisions(t *testing.T) {
 	restored := call("/history/restore", map[string]any{"revision": 2, "entry_id": first["id"], "scope": "alias_target"}, 200)
 	restoreRow := a.managementHistory(100, "").([]any)[0].(map[string]any)
 	restoreDetail := restoreRow["summary_detail"].(policy.Text)
-	if restoreDetail.Code != "restored" || restoreDetail.Params["entry_id"] != first["id"] {
+	if restoreDetail.Code != "alias_target_restored" || restoreDetail.Params["alias_id"] != id || restoreDetail.Params["target"] != "gpt-6.1-sol" {
 		t.Fatal(restoreRow)
 	}
 	if restored["revision"] != float64(3) {

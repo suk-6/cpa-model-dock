@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/suk-6/cpa-model-dock/internal/policy"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/suk-6/cpa-model-dock/internal/policy"
 )
 
 type fakeHost struct {
@@ -281,8 +281,8 @@ func TestConfigOpenAIRegistrationsWithoutFileRuntime(t *testing.T) {
 		t.Fatalf("disabled config enabled: %+v", m)
 	}
 	host.models = `{"credentials":[]}`
-	if got := s.Refresh(context.Background()); len(got.Models) != 0 {
-		t.Fatalf("removed config retained: %+v", got)
+	if got := s.Refresh(context.Background()); got.OK || !got.Stale || len(got.Models) != 1 || got.Warning != "no_models_using_last_known" {
+		t.Fatalf("empty config inventory erased last-known registration: %+v", got)
 	}
 	for _, c := range []credentialModels{
 		{ID: id, AuthIndex: "cfg", Provider: "codex", Models: []string{"m"}},

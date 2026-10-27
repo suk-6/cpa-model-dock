@@ -251,16 +251,29 @@ All paths below are relative to `/v0/management/plugins/cpa-model-dock`; all req
 | `GET /overview`, `GET /state`, `GET /catalog` | Saved policy, current revision, status and catalog. |
 | `PUT /state` | Full validated policy replacement; requires revision. |
 | `POST /validate` | Validate full draft and preview, without saving. **PUT is not supported.** |
-| `POST /catalog/refresh` | Refresh catalog only; no revision required and no policy/history/alias-status mutation. |
+| `POST /catalog/refresh` | Refresh catalog only; no revision required. Background refresh delivery also evaluates automatic aliases. |
 | `POST /aliases/check` | Preview with `dry_run:true`; otherwise apply with revision. Optional `alias_id`. |
 | `POST /rules/preview` | Preview a draft's allow rules and public names. |
 | `POST /explain` | `{model,draft?}` policy explanation, no inference. |
 | `GET /history?limit=100&before=...` | Newest-first history; `before` is an exclusive entry-ID cursor. |
-| `POST /history/restore` | `{entry_id,revision,scope:"state"|"alias_target"}`. Undo to the selected entry's **before** value as a new revision. |
+| `POST /history/restore` | `{entry_id,revision,scope:"state"|"alias_target",pin?:bool}`. Undo to the selected entry's **before** value as a new revision. |
 
 Mutations use a current body `revision` or quoted `If-Match: "<n>"`. If both are provided they must agree. Read-only previews/validate/explain and dry-run checks do not require revision. Invalid saves return 422 and change nothing; `/validate` reports policy validation results with HTTP 200 and `valid:true` or `valid:false`. Stale revisions return 409. Refetch GET state after mutations instead of predicting revision increments. Refresh and unchanged checks do not advance policy revision. API runtime status/preview shapes may evolve during backend/UI integration; the binding contract and current backend take precedence over the development mock. Sources: [routes](internal/mgmt/handler.go), [views](internal/mgmt/views.go), [application](app.go).
 
 History restore undoes to the selected entry's `before` value as a new revision. State scope restores the full policy; `alias_target` scope restores only that alias's target in the current policy and fails validation if the alias no longer exists. It never rolls revision backward or deletes history. Persistence uses atomic writes, a last-good `state.json.bak`, and capped `history.jsonl` (1000 entries). Load order is primary → backup → defaults only when neither exists; existing corrupt files without a valid backup yield `policy_unavailable`. Run one writer per state directory; there is no cross-process lock. See [store](internal/store/store.go) and [operations](docs/operations.md).
+
+The plugin saves a sanitized last-known catalog and alias evaluation status in
+`state-dir`. After restart, aliases can use those catalog facts immediately while
+CPA loads credentials; the UI marks them stale until a fresh inventory arrives.
+Startup empty inventories retry after 2s/4s and then every 8s during the first normal
+refresh interval. An entirely empty refresh keeps the last non-empty catalog and
+shows a warning; a non-empty refresh still removes individual missing models.
+CPA must finish loading its credentials before it can execute a request.
+Unrelated policy edits preserve alias check times, candidates and reasons.
+
+History describes changed alias fields with before/after values. When restoring
+an automatic alias's old target, choose **Restore and pin** to keep that model, or
+**Restore only** to allow subsequent automatic checks to advance it again.
 
 ## Known limitations, enforcement boundaries and privacy
 

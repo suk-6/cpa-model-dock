@@ -6,7 +6,7 @@
 // mappings. Consequently a slash in a registered ID establishes no trusted
 // prefix, and a different resolved destination establishes no trusted CPA alias.
 // Missing runtime entries are not treated as enabled credentials, except for
-// recognized config OpenAI-compatible registrations (see configRegistration).
+// recognized config OpenAI-compatible/Codex registrations (see configRegistration).
 // The callbacks
 // cannot expose static executor-only models or guarantee request-time eligibility.
 package catalog
@@ -14,14 +14,15 @@ package catalog
 import (
 	"context"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/suk-6/cpa-model-dock/internal/hostabi"
 	"github.com/suk-6/cpa-model-dock/internal/policy"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 )
 
 const MinInterval = 30 * time.Second
@@ -41,6 +42,7 @@ type Service struct {
 	done            chan struct{}
 	interval        atomic.Int64
 	intervalChanged chan struct{}
+	cacheDir        string
 }
 
 // These projections match the real HostAuthModels{Request,Response} and
@@ -189,7 +191,14 @@ func (s *Service) Refresh(ctx context.Context) (result policy.Catalog) {
 	if ctx.Err() != nil {
 		return s.failed("host catalog refresh cancelled")
 	}
-	next := policy.Catalog{Models: make([]policy.Model, 0, len(models)), Prefixes: make([]string, 0, len(prefixes)), RefreshedAt: time.Now().UTC(), OK: true}
+	// An empty host registry is common while CPA is starting/reconfiguring.
+	// It is not evidence that every previously registered model was removed.
+	// A nonempty response remains authoritative, including partial removals.
+	if len(models) == 0 {
+		return s.empty()
+	}
+	now := time.Now().UTC()
+	next := policy.Catalog{Models: make([]policy.Model, 0, len(models)), Prefixes: make([]string, 0, len(prefixes)), RefreshedAt: now, LastGoodAt: now, OK: true}
 	for _, entry := range models {
 		// For routable models, only advertise providers with enabled runtime
 		// evidence. An unavailable provider must not inherit another provider's
@@ -212,33 +221,51 @@ func (s *Service) Refresh(ctx context.Context) (result policy.Catalog) {
 	}
 	sort.Strings(next.Prefixes)
 	sort.Slice(next.Models, func(i, j int) bool { return next.Models[i].ID < next.Models[j].ID })
+	if s.cacheDir != "" && s.persist(next) != nil {
+		// Disk failures do not invalidate fresh host facts. Never surface an
+		// underlying filesystem error: it can include private directory names.
+		next.Warning = "catalog_cache_unavailable"
+	}
 	return s.publish(next)
 }
 
-// CPA v8.0.44 config synthesis creates active OpenAI-compatible credentials
+// CPA v8.0.44 config synthesis creates active OpenAI-compatible/Codex credentials
 // without a file path or runtime_only attribute. auth.list/get_runtime omit
 // them, while auth.models includes their live per-client registry entries.
 // Disabled config credentials are removed by synthesis/reconciliation. Use that
 // positive registration evidence only for the host's specific config ID/provider
 // pair; arbitrary missing OAuth/runtime records remain unconfirmed. This is a
 // cached registration fact, not a guarantee of request-time health/eligibility.
-// Sources: internal/watcher/synthesizer/config.go:synthesizeOpenAICompat,
+// Sources: internal/watcher/synthesizer/config.go:synthesizeOpenAICompat/synthesizeCodexStyleKeys,
+// internal/watcher/synthesizer/helpers.go:StableIDGenerator.Next,
 // internal/pluginhost/auth_callbacks.go:buildHostAuthFileEntry/buildHostAuthModels,
 // sdk/cliproxy/service_auth.go:applyAuthUpdate.
 func configRegistration(c credentialModels) bool {
+	if c.AuthIndex == "" || len(c.Models) == 0 {
+		return false
+	}
+	// Codex config API keys have the exact host-generated ID kind and token.
+	// OAuth/file entries and unrelated provider kinds remain unconfirmed.
+	const codexPrefix = "codex:apikey:"
+	if c.Provider == "codex" && strings.HasPrefix(c.ID, codexPrefix) {
+		token, collision, suffixed := strings.Cut(strings.TrimPrefix(c.ID, codexPrefix), "-")
+		if !configHash(token) {
+			return false
+		}
+		if suffixed {
+			n, err := strconv.Atoi(collision)
+			return err == nil && n > 0 && strconv.Itoa(n) == collision
+		}
+		return true
+	}
 	const prefix = "openai-compatibility:"
-	if !strings.HasPrefix(c.ID, prefix) || c.AuthIndex == "" || len(c.Models) == 0 {
+	if !strings.HasPrefix(c.ID, prefix) {
 		return false
 	}
 	nameAndHash := strings.TrimPrefix(c.ID, prefix)
 	i := strings.LastIndexByte(nameAndHash, ':')
-	if i <= 0 || len(nameAndHash[i+1:]) != 12 {
+	if i <= 0 || !configHash(nameAndHash[i+1:]) {
 		return false
-	}
-	for _, ch := range nameAndHash[i+1:] {
-		if !(ch >= '0' && ch <= '9' || ch >= 'a' && ch <= 'f') {
-			return false
-		}
 	}
 	name := nameAndHash[:i]
 	provider := name
@@ -248,11 +275,40 @@ func configRegistration(c credentialModels) bool {
 	return c.Provider == provider
 }
 
+func configHash(token string) bool {
+	if len(token) != 12 {
+		return false
+	}
+	for _, ch := range token {
+		if !(ch >= '0' && ch <= '9' || ch >= 'a' && ch <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Service) failed(message string) policy.Catalog {
 	next := copyCatalog(*s.snapshot.Load())
 	next.OK, next.Error = false, message
+	next.Stale = len(next.Models) > 0
+	next.Warning = ""
+	if next.Stale {
+		next.Warning = "catalog_unavailable_using_last_known"
+	}
 	// RefreshedAt records the attempted refresh; last-good model facts survive.
 	next.RefreshedAt = time.Now().UTC()
+	return s.publish(next)
+}
+
+func (s *Service) empty() policy.Catalog {
+	next := s.Snapshot()
+	next.OK, next.Error = false, ""
+	next.RefreshedAt = time.Now().UTC()
+	next.Stale = len(next.Models) > 0
+	next.Warning = "no_models"
+	if next.Stale {
+		next.Warning = "no_models_using_last_known"
+	}
 	return s.publish(next)
 }
 
@@ -287,37 +343,99 @@ func (s *Service) Start(ctx context.Context, interval time.Duration, onRefresh f
 	defer s.lifecycleMu.Unlock()
 	s.stop()
 	s.SetInterval(interval)
+	// The new poller reads the current value directly; discard the old
+	// poller's coalesced notification before starting its timer.
+	select {
+	case <-s.intervalChanged:
+	default:
+	}
 	ctx, s.cancel = context.WithCancel(ctx)
 	s.done = make(chan struct{})
 	done := s.done
 	go func() {
 		defer close(done)
+		started := time.Now()
 		ticker := time.NewTicker(time.Duration(s.interval.Load()))
 		defer ticker.Stop()
-		refresh := func() {
+		refresh := func() policy.Catalog {
 			catalog := s.Refresh(ctx)
 			if ctx.Err() == nil && onRefresh != nil {
 				notify(onRefresh, catalog)
 			}
+			return catalog
 		}
 		if ctx.Err() != nil {
 			return
 		}
-		refresh()
+		first := refresh()
+		// Bootstrap retries are separate from normal polling. They stop at the
+		// first fresh nonempty result or when the first normal interval elapses.
+		// Start/reconfigure gets a new bounded retry window, even with disk facts.
+		retrying := !freshNonempty(first)
+		backoff := 2 * time.Second
+		nextRetry := time.Now().Add(backoff)
+		var retryTimer *time.Timer
+		var retryC <-chan time.Time
+		defer func() {
+			if retryTimer != nil {
+				retryTimer.Stop()
+			}
+		}()
+		resetRetry := func() {
+			if !retrying {
+				if retryTimer != nil {
+					retryTimer.Stop()
+				}
+				retryC = nil
+				return
+			}
+			deadline := started.Add(time.Duration(s.interval.Load()))
+			when := nextRetry
+			if deadline.Before(when) {
+				when = deadline
+			}
+			if retryTimer == nil {
+				retryTimer = time.NewTimer(time.Until(when))
+			} else {
+				retryTimer.Reset(time.Until(when))
+			}
+			retryC = retryTimer.C
+		}
+		resetRetry()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-s.intervalChanged:
 				ticker.Reset(time.Duration(s.interval.Load()))
+				resetRetry()
+			case <-retryC:
+				// A manual refresh can also end the bootstrap phase.
+				if ctx.Err() != nil {
+					return
+				}
+				if freshNonempty(s.Snapshot()) || !time.Now().Before(started.Add(time.Duration(s.interval.Load()))) {
+					retrying = false
+				} else {
+					retrying = !freshNonempty(refresh())
+					backoff = min(backoff*2, 8*time.Second)
+					nextRetry = time.Now().Add(backoff)
+				}
+				resetRetry()
 			case <-ticker.C:
 				if ctx.Err() != nil {
 					return
 				}
+				retrying = false
+				resetRetry()
 				refresh()
 			}
 		}
 	}()
+}
+
+func freshNonempty(c policy.Catalog) bool {
+	return c.OK && !c.Stale && len(c.Models) > 0
 }
 
 // SetInterval updates a running poller without waiting for refresh callbacks.

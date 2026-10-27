@@ -31,7 +31,12 @@ function summarize(before, after) {
           if (old.name !== next.name) add('alias_renamed', `Renamed alias ${old.name} to ${next.name}`, { alias_id: id, from: old.name, to: next.name });
           if (old.enabled !== next.enabled) add(next.enabled ? 'alias_enabled' : 'alias_disabled', `${next.enabled ? 'Enabled' : 'Disabled'} alias ${next.name}`, params);
           if (old.target !== next.target) add('alias_target_changed', `Changed alias ${next.name} target from ${old.target} to ${next.target}`, { ...params, from: old.target, to: next.target });
-          if (!isDeepStrictEqual({ ...old, name: next.name, enabled: next.enabled, target: next.target }, next)) add('alias_changed', `Changed alias ${next.name}`, params);
+          const fields = ['mode','provider','expose_original','rewrite_response_model','auto.family','auto.include_prerelease','auto.health_check'].flatMap(field => {
+            const read = row => field.split('.').reduce((value,key) => value?.[key],row) ?? null;
+            const from = read(old), to = read(next);
+            return isDeepStrictEqual(from,to) ? [] : [{field,from,to}];
+          });
+          if (fields.length) add('alias_changed', `Changed alias ${next.name}: ${fields.slice(0,3).map(field => `${field.field}: ${field.from ?? 'default'} → ${field.to ?? 'default'}`).join('; ')}${fields.length > 3 ? `; +${fields.length-3} more` : ''}`, {...params,fields,count:fields.length});
         }
       } else {
         const row = next ?? old, params = { rule_id: id, kind: row.kind, value: row.value };
@@ -138,7 +143,7 @@ export function createMockServer(options = {}) {
   let state = clone(options.state ?? defaultState());
   state.updated_at = timestamp();
   let policyAvailable = options.policyAvailable ?? true;
-  let catalogStatus = { last_refresh_at: timestamp(), ok: true, error: null, error_detail: null };
+  let catalogStatus = { last_refresh_at: timestamp(), last_good_at: models.length ? timestamp() : null, ok: models.length > 0, stale:false, warning:models.length ? '' : 'no_models', warning_detail:models.length ? null : reason('no_models','No models are available yet.'), error: null, error_detail: null };
   let aliasStatus = {};
   let history = [];
   let historySequence = 0;
@@ -192,7 +197,7 @@ export function createMockServer(options = {}) {
     };
   }
   function catalog() {
-    return { refreshed_at: catalogStatus.last_refresh_at, ok: catalogStatus.ok, error: catalogStatus.error, error_detail: catalogStatus.error_detail,
+    return { refreshed_at: catalogStatus.last_refresh_at, ok: catalogStatus.ok, stale:catalogStatus.stale, warning:catalogStatus.warning, warning_detail:catalogStatus.warning_detail, last_good_at:catalogStatus.last_good_at, error: catalogStatus.error, error_detail: catalogStatus.error_detail,
       models: models.map((model) => { const decision = decide(model.id); return { id:model.id, providers:clone(model.providers ?? []), credential_count:model.credential_count ?? 0, routable:Boolean(model.routable),
         public: Boolean(model.routable && decision.allowed), reason: !model.routable ?
           reason('not_routable', 'Known in catalog, but no enabled credential advertises it.') : decision.reason }; }) };
@@ -399,7 +404,7 @@ export function createMockServer(options = {}) {
       else if (route === 'GET /overview') {
         const lists = publicLists();
         const warnings = [reason('priority_unverified', 'Plugin priority relative to other installed plugins must be verified on the host.')];
-        if (!catalogStatus.ok) warnings.push(reason('catalog_unavailable', 'Catalog refresh failed; the last good snapshot is retained.'));
+        if (catalogStatus.warning_detail) warnings.push(clone(catalogStatus.warning_detail));
         if (!policyAvailable) warnings.push(reason('policy_unavailable', 'Policy is unavailable; model requests are denied.'));
         for (const alias of state.aliases) if (alias.enabled && !routable(alias)) {
           warnings.push(reason('alias_target_unavailable', `Alias ${alias.name} target ${alias.target} has no matching enabled credential.`,
@@ -447,10 +452,14 @@ export function createMockServer(options = {}) {
         let nextModels;
         try { nextModels = options.refreshCatalog ? await options.refreshCatalog(clone(models)) : clone(models); }
         catch { nextModels = null; }
-        catalogStatus = { last_refresh_at: timestamp(), ok: Array.isArray(nextModels),
-          error: Array.isArray(nextModels) ? null : 'Mock catalog refresh failed; last good snapshot retained.',
-          error_detail: Array.isArray(nextModels) ? null : reason('catalog_unavailable', 'Could not refresh models; previously available models are retained') };
-        if (Array.isArray(nextModels)) models = clone(nextModels);
+        const success = Array.isArray(nextModels) && nextModels.length > 0;
+        const failed = !Array.isArray(nextModels);
+        const warning = success ? '' : failed ? 'catalog_unavailable_using_last_known' : models.length ? 'no_models_using_last_known' : 'no_models';
+        catalogStatus = { last_refresh_at: timestamp(), last_good_at:success ? timestamp() : catalogStatus.last_good_at, ok:success, stale:!success && models.length > 0, warning,
+          warning_detail:warning ? reason(warning,failed ? 'Could not refresh models; previously available models are retained' : 'No available models returned; the last available list is retained.') : null,
+          error: failed ? 'Mock catalog refresh failed; last good snapshot retained.' : null,
+          error_detail: failed ? reason('catalog_unavailable', 'Could not refresh models; previously available models are retained') : null };
+        if (success) models = clone(nextModels);
         result = catalog(); finishRefresh();
       } else if (route === 'POST /aliases/check') {
         if (body.dry_run !== undefined && typeof body.dry_run !== 'boolean') return send(response, 422, error(422, 'validation_failed', 'Invalid dry_run.', { details: [detail('dry_run', 'invalid_type', 'Expected true or false.', { expected: 'boolean' })] }).body);
@@ -484,6 +493,8 @@ export function createMockServer(options = {}) {
         const details=[];
         if (typeof body.entry_id !== 'string' || !body.entry_id.trim()) details.push(detail('entry_id', typeof body.entry_id === 'string' || body.entry_id === undefined ? 'required_entry_id' : 'invalid_type', 'A history entry is required.', typeof body.entry_id === 'string' || body.entry_id === undefined ? {} : { expected: 'string' }));
         if (!['state','alias_target'].includes(body.scope)) details.push(detail('scope', 'invalid_restore_scope', 'Use state or alias_target.'));
+        if (Object.hasOwn(body,'pin') && typeof body.pin !== 'boolean') details.push(detail('pin','invalid_type','Expected true or false.',{expected:'boolean'}));
+        if (body.pin === true && body.scope !== 'alias_target') details.push(detail('pin','invalid_restore_pin','Pin is only available when restoring an alias target.'));
         if (details.length) return send(response,422,error(422,'validation_failed','Invalid restore.',{details}).body);
         const entry = history.find((item) => item.id === body.entry_id);
         if (!entry) return send(response, 404, error(404, 'entry_not_found', 'History entry not found.').body);
@@ -496,12 +507,19 @@ export function createMockServer(options = {}) {
         } else {
           const alias = state.aliases.find((item) => item.id === entry.before.alias_id);
           if (!alias) return send(response, 422, error(422, 'validation_failed', 'Historical alias no longer exists.', { details: [detail('entry_id', 'alias_not_found', 'Restore the containing state first.')] }).body);
-          alias.target = entry.before.target; delete aliasStatus[alias.id];
+          alias.target = entry.before.target; if (body.pin === true) alias.mode = 'pinned'; delete aliasStatus[alias.id];
         }
         bump();
-        record('user', body.scope, reason('restored', `Restored before ${entry.id} (${body.scope})`, { entry_id: entry.id }),
-          body.scope === 'state' ? before : { alias_id: entry.before.alias_id, target: before.aliases.find((alias) => alias.id === entry.before.alias_id).target },
-          body.scope === 'state' ? savedPolicy(state) : clone(entry.before));
+        const alias = body.scope === 'alias_target' ? state.aliases.find(alias => alias.id === entry.before.alias_id) : null;
+        const sourceAt = entry.before.updated_at || entry.at;
+        const summaryDetail = alias ? reason('alias_target_restored', `Restored alias ${alias.name} target to ${alias.target}`,{alias_id:alias.id,alias:alias.name,target:alias.target,pinned:alias.mode === 'pinned'}) :
+          reason('policy_restored',`Restored policy from ${sourceAt}`,{at:sourceAt});
+        const oldAlias = alias && before.aliases.find(item => item.id === alias.id);
+        const beforeView = alias ? {alias_id:alias.id,target:oldAlias.target} : before;
+        const afterView = alias ? {alias_id:alias.id,target:alias.target} : savedPolicy(state);
+        if (alias && oldAlias.mode !== alias.mode) { beforeView.mode = oldAlias.mode; afterView.mode = alias.mode; }
+        record('user', body.scope, summaryDetail,
+          beforeView, afterView);
         result = getState();
       }
       send(response, 200, result);

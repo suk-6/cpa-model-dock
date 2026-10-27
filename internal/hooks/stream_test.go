@@ -3,6 +3,8 @@ package hooks
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -166,5 +168,223 @@ func TestStreamDeniedAndMissingRequestIdentity(t *testing.T) {
 	out = h.Stream(pluginapi.StreamChunkInterceptRequest{RequestedModel: "friendly", Model: "gpt-6.1-sol", SourceFormat: "openai", Body: []byte(`{"model":"gpt-6.1-sol"}`)})
 	if bytes.Contains(out.Body, []byte("gpt-6.1-sol")) || len(out.Body) == 0 {
 		t.Fatal("fragment parser accepted uncorrelated chunks")
+	}
+}
+
+// minimalResponsesFramer copies the frame-detection rules from CLIProxyAPI
+// v8.0.44 sdk/api/handlers/openai/openai_responses_handlers.go (MIT), omitting
+// output repair, telemetry filtering and completion synthesis. Keep chunk
+// boundaries here: merely joining outputs would conceal the Codex regression.
+type minimalResponsesFramer struct {
+	pending []byte
+	frames  [][]byte
+}
+
+func (f *minimalResponsesFramer) write(chunk []byte) {
+	if len(chunk) == 0 {
+		return
+	}
+	has := func(b []byte, prefix string) bool {
+		for _, line := range bytes.Split(b, []byte("\n")) {
+			if bytes.HasPrefix(bytes.TrimSpace(line), []byte(prefix)) {
+				return true
+			}
+		}
+		return false
+	}
+	valid := func(b []byte) bool {
+		var values [][]byte
+		for _, line := range bytes.Split(b, []byte("\n")) {
+			line = bytes.TrimSpace(line)
+			if bytes.HasPrefix(line, []byte("data:")) {
+				values = append(values, bytes.TrimSpace(line[5:]))
+			}
+		}
+		data := bytes.Join(values, []byte("\n"))
+		return len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) || json.Valid(data)
+	}
+	emit := func() { f.frames = append(f.frames, bytes.Clone(f.pending)); f.pending = nil }
+	if len(bytes.TrimSpace(f.pending)) > 0 && !has(f.pending, "event:") && has(f.pending, "data:") && valid(f.pending) && bytes.HasPrefix(bytes.TrimLeft(chunk, " \t\r\n"), []byte("data:")) {
+		emit()
+	}
+	newField := false
+	for _, prefix := range []string{"data:", "event:", "id:", "retry:", ":"} {
+		if bytes.HasPrefix(bytes.TrimLeft(chunk, " \t"), []byte(prefix)) {
+			newField = true
+			break
+		}
+	}
+	if len(f.pending) > 0 && !bytes.ContainsAny(f.pending[len(f.pending)-1:], "\r\n") && !bytes.ContainsAny(chunk[:1], "\r\n") && newField {
+		f.pending = append(f.pending, '\n')
+	}
+	f.pending = append(f.pending, chunk...)
+	for {
+		n := 0
+		for _, sep := range []string{"\n\n", "\r\n\r\n"} {
+			if i := bytes.Index(f.pending, []byte(sep)); i >= 0 && (n == 0 || i+len(sep) < n) {
+				n = i + len(sep)
+			}
+		}
+		if n == 0 {
+			break
+		}
+		f.frames = append(f.frames, bytes.Clone(f.pending[:n]))
+		f.pending = bytes.Clone(f.pending[n:])
+	}
+	if len(bytes.TrimSpace(f.pending)) == 0 {
+		f.pending = nil
+		return
+	}
+	if has(f.pending, "event:") && has(f.pending, "data:") && valid(f.pending) {
+		emit()
+	}
+}
+
+func capturedResponsesLines(t *testing.T, ending string) [][]byte {
+	t.Helper()
+	capture, err := os.ReadFile("testdata/responses-sse-redacted.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var chunks [][]byte
+	for _, line := range bytes.Split(capture, []byte("\n")) {
+		if len(line) > 0 {
+			chunks = append(chunks, append(bytes.Clone(line), ending...))
+		}
+	}
+	return chunks
+}
+
+func TestCodexResponsesLinesRewriteImmediatelyAndReachFramer(t *testing.T) {
+	for _, ending := range []string{"", "\n", "\r\n"} {
+		t.Run(fmt.Sprintf("ending_%q", ending), func(t *testing.T) {
+			h := hooksFor(t, fixture("gpt-6.1-sol", true))
+			h.Before(pluginapi.RequestInterceptRequest{RequestID: "codex", RequestedModel: "friendly", Model: "gpt-6.1-sol", Stream: true})
+			var framer minimalResponsesFramer
+			for i, chunk := range capturedResponsesLines(t, ending) {
+				out := h.Stream(pluginapi.StreamChunkInterceptRequest{RequestID: "codex", RequestedModel: "friendly", Model: "gpt-6.1-sol", SourceFormat: "openai-response", ChunkIndex: i, Body: chunk})
+				if out.DropChunk || len(out.Body) == 0 {
+					t.Fatalf("complete line %d withheld: %q", i, chunk)
+				}
+				if bytes.HasPrefix(chunk, []byte("data:")) {
+					var original, event map[string]json.RawMessage
+					if err := json.Unmarshal(bytes.TrimSpace(chunk[5:]), &original); err != nil {
+						t.Fatal(err)
+					}
+					if err := json.Unmarshal(bytes.TrimSpace(out.Body[5:]), &event); err != nil {
+						t.Fatal(err)
+					}
+					if raw, ok := original["response"]; ok {
+						var response map[string]json.RawMessage
+						json.Unmarshal(raw, &response)
+						response["model"] = json.RawMessage(`"friendly"`)
+						expected, _ := json.Marshal(response)
+						original["response"] = expected
+					}
+					want, _ := json.Marshal(original)
+					got, _ := json.Marshal(event)
+					if !bytes.Equal(want, got) {
+						t.Fatalf("line %d changed non-model fields", i)
+					}
+					if !bytes.HasSuffix(out.Body, []byte(ending)) || (ending == "" && bytes.HasSuffix(out.Body, []byte("\n"))) {
+						t.Fatalf("line endings changed: %q", out.Body)
+					}
+				} else if !bytes.Equal(out.Body, chunk) {
+					t.Fatalf("metadata line changed: %q -> %q", chunk, out.Body)
+				}
+				framer.write(out.Body)
+			}
+			models := 0
+			for _, frame := range framer.frames {
+				for _, line := range bytes.Split(frame, []byte("\n")) {
+					if !bytes.HasPrefix(line, []byte("data:")) {
+						continue
+					}
+					var event struct {
+						Response *struct {
+							Model string `json:"model"`
+						} `json:"response"`
+					}
+					if json.Unmarshal(bytes.TrimSpace(line[5:]), &event) != nil {
+						t.Fatalf("invalid frame %q", frame)
+					}
+					if event.Response != nil {
+						if event.Response.Model != "friendly" {
+							t.Fatalf("model=%q", event.Response.Model)
+						}
+						models++
+					}
+				}
+			}
+			if len(framer.frames) == 0 || models != 3 {
+				t.Fatalf("data frames=%d response models=%d want 3", len(framer.frames), models)
+			}
+		})
+	}
+}
+
+func TestSSEMixedGranularities(t *testing.T) {
+	lines := capturedResponsesLines(t, "\n")
+	// Coalesce complete frames, fragment the next value at every byte, then
+	// resume complete lines and finish with a complete event in one chunk.
+	var input []byte
+	for _, line := range lines {
+		input = append(input, line...)
+	}
+	for split := 1; split < len(input); split++ {
+		chunks := [][]byte{input[:split], input[split:]}
+		out := collectStream(t, "openai-response", chunks)
+		if bytes.Count(out, []byte(`"model":"friendly"`)) != 3 || bytes.Contains(out, []byte(`"model":"gpt-6.1-sol"`)) {
+			t.Fatalf("split %d: %s", split, out)
+		}
+	}
+	var chunks [][]byte
+	chunks = append(chunks, bytes.Join(lines[:4], nil))
+	for _, b := range bytes.Join(lines[4:8], nil) {
+		chunks = append(chunks, []byte{b})
+	}
+	chunks = append(chunks, lines[8:]...)
+	out := collectStream(t, "openai-response", chunks)
+	if bytes.Count(out, []byte(`"model":"friendly"`)) != 3 {
+		t.Fatal(string(out))
+	}
+}
+
+func TestSSEOpaqueDataAndMetadataPassThrough(t *testing.T) {
+	for _, value := range []string{"notification", "42", "true", "null", `"gpt-6.1-sol"`, "[DONE]"} {
+		input := []byte("event: notice\r\nid: 1\r\n: ping\r\ndata: " + value + "\r\n\r\n")
+		out := collectStream(t, "openai-response", [][]byte{input})
+		if !bytes.Equal(out, input) {
+			t.Fatalf("opaque data changed %q -> %q", input, out)
+		}
+	}
+	input := []byte("id: {\"model\":\"gpt-6.1-sol\"}\nevent: response.created\ndata: {\"response\":{\"model\":\"gpt-6.1-sol\"}}\n\n")
+	var chunks [][]byte
+	for i := range input {
+		chunks = append(chunks, input[i:i+1])
+	}
+	out := collectStream(t, "openai-response", chunks)
+	if !bytes.Contains(out, []byte("id: {\"model\":\"gpt-6.1-sol\"}\n")) || !bytes.Contains(out, []byte(`"model":"friendly"`)) {
+		t.Fatal(string(out))
+	}
+}
+
+func TestMalformedDataWithoutDelimiterFailsClosed(t *testing.T) {
+	for _, input := range []string{"data: {not JSON secret}", "data: {\"model\":\"secret\"}junk\n", "data: {\"model\":\n\n"} {
+		out := collectStream(t, "openai-response", [][]byte{[]byte(input)})
+		if bytes.Contains(out, []byte("secret")) || !bytes.Contains(out, []byte("policy_unavailable")) {
+			t.Fatalf("failed open: %q", out)
+		}
+	}
+}
+
+func TestDelimiterFreeMetadataIsImmediate(t *testing.T) {
+	h := hooksFor(t, fixture("gpt-6.1-sol", true))
+	h.Before(pluginapi.RequestInterceptRequest{RequestID: "meta", RequestedModel: "friendly", Model: "gpt-6.1-sol"})
+	for i, line := range []string{"event: response.created", "id: evt-1", ": keepalive", "retry: 1000", "custom: opaque"} {
+		out := h.Stream(pluginapi.StreamChunkInterceptRequest{RequestID: "meta", RequestedModel: "friendly", Model: "gpt-6.1-sol", SourceFormat: "openai-response", ChunkIndex: i, Body: []byte(line)})
+		if out.DropChunk || string(out.Body) != line {
+			t.Fatalf("metadata delayed or changed: %q %+v", line, out)
+		}
 	}
 }

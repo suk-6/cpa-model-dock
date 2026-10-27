@@ -119,12 +119,17 @@ func (u *upstream) responses(w http.ResponseWriter, model string, stream bool) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	for i, event := range []map[string]any{
 		{"type": "response.created", "response": map[string]any{"id": "resp_e2e", "object": "response", "status": "in_progress", "model": model}},
+		{"type": "response.in_progress", "response": map[string]any{"id": "resp_e2e", "object": "response", "status": "in_progress", "model": model}},
 		{"type": "response.output_text.delta", "item_id": "msg_e2e", "output_index": 0, "content_index": 0, "delta": "e2e-ok"},
 		{"type": "response.completed", "response": response},
 	} {
 		event["sequence_number"] = i
 		data, _ := json.Marshal(event)
-		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event["type"], data)
+		// Codex's scanner strips delimiters before translation/plugin hooks.
+		// Flush each upstream line to exercise that native executor path.
+		fmt.Fprintf(w, "event: %s\n", event["type"])
+		w.(http.Flusher).Flush()
+		fmt.Fprintf(w, "data: %s\n\n", data)
 		w.(http.Flusher).Flush()
 	}
 }

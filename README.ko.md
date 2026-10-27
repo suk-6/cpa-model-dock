@@ -113,7 +113,7 @@ UI는 관리 센터의 기존 `cli-proxy-auth` 또는 구형 `managementKey` 저
 
 자동 별칭은 계열 템플릿과 **모델 이름 전체**를 비교합니다. `gpt-{version}-sol`은 `gpt-6.1-sol`과 일치하지만 `gpt-6.1-sol-mini`와는 일치하지 않습니다. 버전을 숫자 구성 요소로 비교한 뒤(`6.10 > 6.9`, `4-5 == 4.5`) 비교 가능한 날짜를 비교합니다. `{date}`는 전체 날짜와 모호하지 않은 짧은 날짜를 지원하며, 불확실한 연도·세기를 임의로 추측하지 않습니다. 같은 버전의 날짜 있음/없음, 서로 다른 날짜 정밀도, 최상위 동률, 비교 불가능한 시험 버전은 모호할 수 있습니다. 이때 **현재 대상을 유지**하고 이유를 기록합니다. 같거나 낮은 버전으로 변경하지 않으며 현재 대상을 해석할 수 없으면 `current_unparseable`로 유지합니다. 시험 버전(`preview`, `beta`, `alpha`, `exp`, `experimental`, `rc`, `nightly`, `dev`, `test`)은 기본 제외됩니다. 계열 허용 규칙도 시험 버전을 제외합니다.
 
-기본 계열은 Sol, Astra, Luna, Claude Opus/Sonnet/Haiku/Fable, Gemini Pro/Flash입니다. 사용자 계열은 `{version}` 하나와 선택적인 `{date}` 하나를 사용합니다. 활성 런타임 자격 증명이 제공하는 후보를 선택합니다. 계약 §4의 예외로, CPA 설정에서 합성된 OpenAI 호환 클라이언트는 런타임 목록에서 생략되므로 호스트의 해당 클라이언트 모델 등록을 캐시된 라우팅 근거로 사용합니다. 명시적인 비활성·사용 불가 근거가 우선합니다. 그 외의 누락 자격 증명과 목록에만 있는 모델은 라우팅 근거가 아닙니다. 새로고침 실패 시 마지막 정상 정보와 대상을 유지합니다. 이 목록은 스케줄러의 현재 선택 가능성이나 모델별 쿨다운을 원자적으로 보증하지 못하며 정적 executor 전용 등록은 포함하지 않습니다. 상태 확인은 **기본 꺼짐**이며 켜면 변경 전 CPA를 통한 최소 유료 요청이 발생할 수 있습니다. dry run은 유료 상태 확인을 실행하지 않습니다. 근거: [버전 파서](internal/version/version.go), [자동 평가](internal/autoupdate/evaluate.go), [목록](internal/catalog/catalog.go), [상태 확인 요청](app.go).
+기본 계열은 Sol, Astra, Luna, Claude Opus/Sonnet/Haiku/Fable, Gemini Pro/Flash입니다. 사용자 계열은 `{version}` 하나와 선택적인 `{date}` 하나를 사용합니다. 활성 런타임 자격 증명이 제공하는 후보를 선택합니다. 계약 §4의 예외로, CPA 설정에서 합성된 OpenAI 호환 및 Codex API 키 클라이언트는 런타임 목록에서 생략되므로 호스트의 해당 클라이언트 모델 등록을 캐시된 라우팅 근거로 사용합니다. 명시적인 비활성·사용 불가 근거가 우선합니다. 그 외의 누락 자격 증명과 목록에만 있는 모델은 라우팅 근거가 아닙니다. 새로고침 실패 시 마지막 정상 정보와 대상을 유지합니다. 이 목록은 스케줄러의 현재 선택 가능성이나 모델별 쿨다운을 원자적으로 보증하지 못하며 정적 executor 전용 등록은 포함하지 않습니다. 상태 확인은 **기본 꺼짐**이며 켜면 변경 전 CPA를 통한 최소 유료 요청이 발생할 수 있습니다. dry run은 유료 상태 확인을 실행하지 않습니다. 근거: [버전 파서](internal/version/version.go), [자동 평가](internal/autoupdate/evaluate.go), [목록](internal/catalog/catalog.go), [상태 확인 요청](app.go).
 
 ## UI와 curl로 따라 하는 네 가지 예제
 
@@ -256,11 +256,26 @@ curl -sS -i "$CPA_ORIGIN/v1/chat/completions" \
 | `POST /rules/preview` | 초안의 규칙과 공개 이름 미리보기. |
 | `POST /explain` | `{model,draft?}` 정책 설명. 추론 없음. |
 | `GET /history?limit=100&before=...` | 최신순 이력. `before`는 해당 항목을 제외하는 이력 ID 커서. |
-| `POST /history/restore` | `{entry_id,revision,scope:"state"|"alias_target"}`. 선택 항목의 **before**로 되돌리며 새 리비전 생성. |
+| `POST /history/restore` | `{entry_id,revision,scope:"state"|"alias_target",pin?:bool}`. 선택 항목의 **before**로 되돌리며 새 리비전 생성. |
 
 변경 요청은 현재 body `revision` 또는 따옴표가 있는 `If-Match: "<n>"`를 사용합니다. 둘 다 보내면 일치해야 합니다. 읽기 전용 preview/validate/explain과 dry-run check는 리비전이 필요 없습니다. 잘못된 저장은 422이며 아무것도 변경하지 않습니다. `/validate`의 정책 검증 결과는 HTTP 200과 `valid:true` 또는 `valid:false`로 반환합니다. 오래된 리비전은 409입니다. 새로고침·변경 없는 확인은 정책 리비전을 올리지 않습니다. 변경 후 GET state로 다시 읽으세요. 백엔드/UI 통합 과정에서 런타임 상태·미리보기 응답 형태가 바뀔 수 있습니다. 개발 mock보다 구현 계약과 현재 백엔드를 우선합니다. 근거: [라우트](internal/mgmt/handler.go), [응답 뷰](internal/mgmt/views.go), [애플리케이션](app.go).
 
 이력 복원은 선택 항목의 `before` 값으로 되돌리고 새 리비전을 만듭니다. state 범위는 전체 정책을, `alias_target` 범위는 현재 정책에서 해당 별칭의 대상만 복원합니다. 별칭이 없으면 검증에 실패합니다. 리비전을 낮추거나 이력을 삭제하지 않습니다. 저장은 원자적 쓰기, 마지막 정상 사본 `state.json.bak`, 최대 1000개 `history.jsonl`을 사용합니다. 로드는 원본 → 백업 순서이며 둘 다 없을 때만 기본값을 씁니다. 기존 파일이 손상되고 유효한 백업도 없으면 `policy_unavailable`입니다. 상태 디렉터리당 writer 하나만 사용하세요. 프로세스 간 잠금은 없습니다. [저장소](internal/store/store.go), [운영 안내](docs/operations.md)를 참고하세요.
+
+
+### 재시작 및 복원 동작
+
+`state-dir`에 비밀정보가 없는 마지막 모델 카탈로그와 별칭 평가 상태를 원자적으로
+저장합니다. 재시작 시 저장된 모델 정보를 바로 사용하며 새 조회가 성공할 때까지
+오래된 정보로 표시합니다. 시작 직후 목록이 비어 있으면 2초/4초 이후
+8초 간격으로 첫 정상 갱신 주기 동안 재시도합니다. 전체 목록이 비면 마지막
+목록을 유지하고 경고하며, 일부 모델만 사라진 정상 응답은 그대로 반영합니다.
+실제 요청 실행에는 CPA의 인증정보 로딩이 완료되어야 합니다.
+
+관련 없는 정책 편집은 별칭의 마지막 확인 시간·후보·이유를 보존합니다. 이력은
+변경한 별칭 필드와 이전/이후 값을 표시합니다. 자동 별칭의 이전 대상을 복원할
+때 **복원하고 모델 고정** 또는 **복원만 수행**을 선택할 수 있으며, 후자는 다음
+자동 확인에서 다시 최신 모델로 변경될 수 있습니다.
 
 ## 알려진 한계, 집행 경계와 개인정보
 
