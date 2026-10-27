@@ -1,11 +1,13 @@
 package store
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -324,25 +326,177 @@ func TestHistoryCrashRecoveryAndCap(t *testing.T) {
 }
 
 func TestFailedPersistenceDoesNotPublishRevision(t *testing.T) {
-	dir := t.TempDir()
-	s := openStore(t, dir)
-	state := stateOf(t, s)
-	// A directory at the destination makes rename fail after the WAL append.
-	if err := os.Mkdir(filepath.Join(dir, "state.json"), 0700); err != nil {
-		t.Fatal(err)
+	for _, initial := range []int64{0, 1} {
+		t.Run(fmt.Sprint(initial), func(t *testing.T) {
+			dir := t.TempDir()
+			s := openStore(t, dir)
+			state := stateOf(t, s)
+			if initial == 1 {
+				state = saveState(t, s, state)
+				if err := os.Remove(filepath.Join(dir, "state.json")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// A directory at the destination makes rename fail after the WAL
+			// append. The primary is never replaced; its backup stays healthy.
+			if err := os.Mkdir(filepath.Join(dir, "state.json"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			next := clone(state)
+			next.Settings.WhitelistEnabled = true
+			failed, err := s.Save(initial, next, "user", "state", "failed save")
+			if err == nil || !reflect.DeepEqual(failed, state) || !reflect.DeepEqual(stateOf(t, s), state) || len(s.History(10, "")) != int(initial) {
+				t.Fatalf("failed save published state/history: %+v, %v", failed, err)
+			}
+			// Inspect the WAL before reopening (which could otherwise repair it).
+			data, err := os.ReadFile(filepath.Join(dir, "history.jsonl"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			lines := bytes.Split(bytes.TrimSpace(data), []byte{'\n'})
+			if initial == 0 {
+				if len(bytes.TrimSpace(data)) != 0 {
+					t.Fatal("failed first save left a WAL record")
+				}
+			} else {
+				var entry Entry
+				if len(lines) != 1 || json.Unmarshal(lines[0], &entry) != nil || !reflect.DeepEqual(entry.After, state) {
+					t.Fatal("WAL rollback lost history or retained the failed save")
+				}
+			}
+			if err := os.Remove(filepath.Join(dir, "state.json")); err != nil {
+				t.Fatal(err)
+			}
+			restarted := openStore(t, dir)
+			if !reflect.DeepEqual(stateOf(t, restarted), state) || len(restarted.History(10, "")) != int(initial) {
+				t.Fatal("restart exposed an uncommitted revision")
+			}
+			committed := saveState(t, restarted, next)
+			if committed.Revision != initial+1 || len(openStore(t, dir).History(10, "")) != int(initial+1) {
+				t.Fatal("failed save left phantom history or consumed a revision")
+			}
+		})
 	}
-	if _, err := s.Save(0, state, "user", "state", ""); err == nil {
-		t.Fatal("expected write failure")
+}
+
+type faultyDirectory struct {
+	syncCloser
+	syncErr, closeErr       error
+	syncCalled, closeCalled bool
+}
+
+func (d *faultyDirectory) Sync() error {
+	d.syncCalled = true
+	if d.syncErr != nil {
+		return d.syncErr
 	}
-	if got := stateOf(t, s); got.Revision != 0 || len(s.History(10, "")) != 0 {
-		t.Fatal("failed save was published")
+	return d.syncCloser.Sync()
+}
+
+func (d *faultyDirectory) Close() error {
+	d.closeCalled = true
+	err := d.syncCloser.Close()
+	if d.closeErr != nil {
+		return d.closeErr
 	}
-	if err := os.Remove(filepath.Join(dir, "state.json")); err != nil {
-		t.Fatal(err)
+	return err
+}
+
+func assertHistoryRevisions(t *testing.T, s *Store, revision int64) {
+	t.Helper()
+	history := s.History(HistoryLimit, "")
+	if len(history) != int(revision) {
+		t.Fatalf("revision %d has %d history entries", revision, len(history))
 	}
-	_ = saveState(t, s, state)
-	if len(openStore(t, dir).History(10, "")) != 1 {
-		t.Fatal("failed save left phantom history")
+	for i, entry := range history {
+		want := revision - int64(i)
+		if entry.ID != fmt.Sprint(want) || entry.After.Revision != want || entry.Before.Revision != want-1 {
+			t.Fatalf("history[%d] breaks revision sequence: %+v", i, entry)
+		}
+		if want == 2 && (!entry.After.Settings.WhitelistEnabled || entry.Before.Settings.WhitelistEnabled || entry.Summary != "post-rename fault") {
+			t.Fatalf("committed history replaced or lost: %+v", entry)
+		}
+	}
+}
+
+func TestPostRenameDirectoryFailuresCommitRevision(t *testing.T) {
+	for _, operation := range []string{"open", "sync", "close"} {
+		for _, restart := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/restart=%v", operation, restart), func(t *testing.T) {
+				dir := t.TempDir()
+				s := openStore(t, dir)
+				previous := saveState(t, s, stateOf(t, s))
+				next := clone(previous)
+				next.Settings.WhitelistEnabled = true
+				fault := errors.New("injected directory " + operation + " failure")
+				openDir := s.openDir
+				calls := 0
+				var faulty *faultyDirectory
+				s.openDir = func(path string) (syncCloser, error) {
+					calls++
+					// The backup is replaced first; fault only the primary's
+					// directory operation, after the WAL and primary rename.
+					if calls == 2 && operation == "open" {
+						return nil, fault
+					}
+					f, err := openDir(path)
+					if err != nil || calls != 2 {
+						return f, err
+					}
+					faulty = &faultyDirectory{syncCloser: f}
+					if operation == "sync" {
+						faulty.syncErr = fault
+					} else {
+						faulty.closeErr = fault
+					}
+					return faulty, nil
+				}
+				committed, err := s.Save(previous.Revision, next, "user", "state", "post-rename fault")
+				s.openDir = openDir
+				data, readErr := os.ReadFile(filepath.Join(dir, "state.json"))
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				disk, decodeErr := decodeState(data)
+				if decodeErr != nil || disk.Revision != 2 || !disk.Settings.WhitelistEnabled {
+					t.Fatalf("fault did not follow primary replacement: %+v, %v", disk, decodeErr)
+				}
+				if err != nil {
+					t.Fatalf("replaced primary reported an uncommitted save: %v", err)
+				}
+				if calls != 2 || (operation != "open" && (faulty == nil || !faulty.syncCalled || !faulty.closeCalled)) {
+					t.Fatalf("directory operation/cleanup not exercised: calls=%d directory=%+v", calls, faulty)
+				}
+				if !reflect.DeepEqual(committed, disk) || !reflect.DeepEqual(stateOf(t, s), disk) {
+					t.Fatal("returned state, memory and replaced primary diverged")
+				}
+				assertHistoryRevisions(t, s, 2)
+				if restart {
+					s = openStore(t, dir)
+					if !reflect.DeepEqual(stateOf(t, s), disk) {
+						t.Fatal("restart lost committed state")
+					}
+					assertHistoryRevisions(t, s, 2)
+				}
+				if got, err := s.Save(previous.Revision, previous, "user", "state", "stale save"); !errors.Is(err, ErrRevisionConflict) || got.Revision != 2 {
+					t.Fatalf("stale writer reused revision: %+v, %v", got, err)
+				}
+				third := saveState(t, s, committed)
+				if third.Revision != 3 {
+					t.Fatalf("next save reused committed revision: %d", third.Revision)
+				}
+				s = openStore(t, dir)
+				if !reflect.DeepEqual(stateOf(t, s), third) {
+					t.Fatal("restart lost subsequent save")
+				}
+				assertHistoryRevisions(t, s, 3)
+				fourth := saveState(t, s, stateOf(t, s))
+				if fourth.Revision != 4 {
+					t.Fatalf("save after restart reused revision: %d", fourth.Revision)
+				}
+				assertHistoryRevisions(t, openStore(t, dir), 4)
+			})
+		}
 	}
 }
 

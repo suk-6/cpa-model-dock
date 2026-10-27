@@ -41,6 +41,11 @@ type Entry struct {
 	After   policy.State `json:"after"`
 }
 
+type syncCloser interface {
+	Sync() error
+	Close() error
+}
+
 type Store struct {
 	mu      sync.Mutex
 	dir     string
@@ -48,6 +53,7 @@ type Store struct {
 	valid   bool
 	loadErr error
 	history []Entry // oldest first; only entries committed by the loaded state
+	openDir func(string) (syncCloser, error)
 }
 
 // Open creates the directory, but never replaces corrupt policy with defaults.
@@ -59,7 +65,7 @@ func Open(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
 	}
-	s := &Store{dir: dir}
+	s := &Store{dir: dir, openDir: func(path string) (syncCloser, error) { return os.Open(path) }}
 	if err := s.load(); err != nil {
 		return nil, err
 	}
@@ -133,7 +139,7 @@ func (s *Store) save(expected int64, state policy.State, actor, kind, summary st
 		if err != nil {
 			return clone(s.state), err
 		}
-		if err := s.atomicWrite("state.json.bak", previous); err != nil {
+		if _, err := s.atomicWrite("state.json.bak", previous); err != nil {
 			return clone(s.state), err
 		}
 	}
@@ -146,12 +152,16 @@ func (s *Store) save(expected int64, state policy.State, actor, kind, summary st
 	if err := s.writeHistory(record, newHistory); err != nil {
 		return clone(s.state), err
 	}
-	if err := s.atomicWrite("state.json", data); err != nil {
+	replaced, err := s.atomicWrite("state.json", data)
+	if err != nil && !replaced {
 		// Best effort rollback of the WAL. loadHistory also removes an orphan
 		// after a crash or rollback failure.
 		_ = s.compactHistory(s.history)
 		return clone(s.state), err
 	}
+	// Rename is the commit point. A later directory open/sync/close failure
+	// cannot undo replacement. Publish success and retain the WAL so callers,
+	// memory and disk agree, even when crash durability could not be confirmed.
 	s.state, s.valid, s.loadErr, s.history = next, true, nil, newHistory
 	return clone(next), nil
 }
@@ -410,13 +420,17 @@ func (s *Store) compactHistory(entries []Entry) error {
 			return err
 		}
 	}
-	return s.atomicWrite("history.jsonl", data.Bytes())
+	_, err := s.atomicWrite("history.jsonl", data.Bytes())
+	return err
 }
 
-func (s *Store) atomicWrite(name string, data []byte) error {
+// atomicWrite reports whether replacement succeeded independently of errors
+// confirming directory durability. Only failures before replacement can roll back
+// a primary state save.
+func (s *Store) atomicWrite(name string, data []byte) (replaced bool, err error) {
 	f, err := os.CreateTemp(s.dir, ".model-dock-*")
 	if err != nil {
-		return err
+		return false, err
 	}
 	tmp := f.Name()
 	defer os.Remove(tmp)
@@ -427,20 +441,20 @@ func (s *Store) atomicWrite(name string, data []byte) error {
 		err = closeErr
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err = os.Rename(tmp, filepath.Join(s.dir, name)); err != nil {
-		return err
+		return false, err
 	}
-	dir, err := os.Open(s.dir)
+	dir, err := s.openDir(s.dir)
 	if err != nil {
-		return err
+		return true, err
 	}
 	err = dir.Sync()
 	if closeErr := dir.Close(); err == nil {
 		err = closeErr
 	}
-	return err
+	return true, err
 }
 
 func clone(state policy.State) policy.State {
