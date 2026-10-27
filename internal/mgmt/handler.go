@@ -44,10 +44,11 @@ type Config struct {
 	HostSchema uint32
 	Guard      bool
 	// AliasStatus optionally supplies cached runtime status without evaluating aliases.
-	// If absent, read routes use Check with dryRun=true.
+	// If absent, read routes report not_checked without evaluating aliases.
 	AliasStatus func() any
-	// Revision-aware callbacks take precedence over their compatibility counterparts.
-	// They must compare expected under the same owner lock used for the operation.
+	// CheckRevision must compare expected under the owner lock for applying checks.
+	// RefreshRevision retains the legacy signature but must ignore expected: catalog
+	// publication preserves the latest policy and never changes policy revision.
 	CheckRevision   func(context.Context, int64, string, bool) (any, error)
 	RefreshRevision func(context.Context, int64) (policy.Catalog, error)
 }
@@ -165,7 +166,10 @@ func (h *Handler) dispatch(ctx context.Context, path string, req pluginapi.Manag
 	}
 	body, details := decodeObject(req.Body)
 	if len(details) != 0 {
-		return invalid(details)
+		if details[0].Code == "body_too_large" {
+			return failure(413, "body_too_large", details[0].Message)
+		}
+		return failure(400, "invalid_json", details[0].Message)
 	}
 	switch path {
 	case "/validate":
@@ -188,9 +192,25 @@ func (h *Handler) dispatch(ctx context.Context, path string, req pluginapi.Manag
 			return h.check(ctx, body, true, s)
 		}
 	}
+	if path == "/catalog/refresh" {
+		var catalog policy.Catalog
+		if h.config.RefreshRevision != nil {
+			var err error
+			catalog, err = h.config.RefreshRevision(ctx, s.StateCopy().Revision)
+			if err != nil {
+				return h.callbackError(err)
+			}
+		} else if h.config.Refresh != nil {
+			catalog = h.config.Refresh(ctx)
+		} else {
+			return unavailable()
+		}
+		return response(http.StatusOK, catalogView(h.snapshot(), catalog))
+	}
+
 	expected, details := revision(req.Headers, body)
 	if len(details) != 0 {
-		return invalid(details)
+		return h.conflict()
 	}
 	if expected != s.StateCopy().Revision {
 		return h.conflict()
@@ -201,7 +221,7 @@ func (h *Handler) dispatch(ctx context.Context, path string, req pluginapi.Manag
 		if len(details) != 0 {
 			return invalid(details)
 		}
-		if details = policy.Validate(state, s.CatalogCopy()); len(details) != 0 {
+		if details = ValidateState(state, s.CatalogCopy()); len(details) != 0 {
 			return invalid(details)
 		}
 		if h.config.Save == nil {
@@ -209,20 +229,6 @@ func (h *Handler) dispatch(ctx context.Context, path string, req pluginapi.Manag
 		}
 		saved, err := h.config.Save(expected, state, "user", "state", "Updated model policy")
 		return h.saved(saved, err)
-	case "/catalog/refresh":
-		var catalog policy.Catalog
-		if h.config.RefreshRevision != nil {
-			var err error
-			catalog, err = h.config.RefreshRevision(ctx, expected)
-			if err != nil {
-				return h.callbackError(err)
-			}
-		} else if h.config.Refresh != nil {
-			catalog = h.config.Refresh(ctx)
-		} else {
-			return unavailable()
-		}
-		return response(http.StatusOK, catalogView(h.snapshot(), catalog))
 	case "/aliases/check":
 		return h.check(ctx, body, false, s)
 	case "/history/restore":
@@ -250,7 +256,7 @@ func (h *Handler) saved(state policy.State, err error) pluginapi.ManagementRespo
 	if err != nil {
 		return h.callbackError(err)
 	}
-	return response(http.StatusOK, state)
+	return response(http.StatusOK, h.stateView(context.Background(), h.snapshot()))
 }
 
 func (h *Handler) callbackError(err error) pluginapi.ManagementResponse {
@@ -276,8 +282,8 @@ func (h *Handler) callbackError(err error) pluginapi.ManagementResponse {
 
 func (h *Handler) conflict() pluginapi.ManagementResponse {
 	return response(http.StatusConflict, map[string]any{
-		"error":   map[string]any{"code": "revision_conflict", "message": "Policy revision has changed"},
-		"current": h.snapshot().StateCopy(),
+		"error": map[string]any{"code": "revision_conflict", "message": "Policy revision has changed"},
+		"state": h.stateView(context.Background(), h.snapshot()),
 	})
 }
 
@@ -294,13 +300,16 @@ func resourceResponse(req pluginapi.ManagementRequest) pluginapi.ManagementRespo
 		return pluginapi.ManagementResponse{StatusCode: http.StatusNotFound, Headers: headers}
 	}
 	headers.Set("Content-Type", contentType)
-	if req.Method != http.MethodGet {
-		headers.Set("Allow", "GET")
+	if req.Method != http.MethodGet && req.Method != http.MethodHead {
+		headers.Set("Allow", "GET, HEAD")
 		return pluginapi.ManagementResponse{StatusCode: http.StatusMethodNotAllowed, Headers: headers}
 	}
 	body, err := web.Assets.ReadFile("assets" + name)
 	if err != nil {
 		return pluginapi.ManagementResponse{StatusCode: http.StatusNotFound, Headers: headers}
+	}
+	if req.Method == http.MethodHead {
+		body = nil
 	}
 	return pluginapi.ManagementResponse{StatusCode: http.StatusOK, Headers: headers, Body: body}
 }
@@ -332,6 +341,6 @@ func invalid(details []policy.Detail) pluginapi.ManagementResponse {
 		details = []policy.Detail{}
 	}
 	return response(http.StatusUnprocessableEntity, map[string]any{"error": map[string]any{
-		"code": "validation_failed", "details": details,
+		"code": "validation_failed", "message": "Policy validation failed", "details": details,
 	}})
 }

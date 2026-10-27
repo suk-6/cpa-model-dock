@@ -67,15 +67,15 @@ func TestAutomaticUpdateHistoryRestartAndRestore(t *testing.T) {
 	if len(loaded.store.History(10, "")) != 2 {
 		t.Fatal("history lost on restart")
 	}
-	restored, e := loaded.restore(2, history[1].ID, "state")
+	restored, e := loaded.restore(2, history[0].ID+":al_one", "alias_target")
 	if e != nil || restored.Revision != 3 || restored.Aliases[0].Target != "gpt-6.1-sol" {
 		t.Fatal(restored, e)
 	}
-	// Catalog refresh/alias check also enforce the caller's exact revision atomically.
+	// Applying checks enforce policy concurrency; refresh ignores the policy token.
 	if _, e = loaded.checkRevision(context.Background(), 2, "", false); !errors.Is(e, store.ErrRevisionConflict) {
 		t.Fatal(e)
 	}
-	if _, e = loaded.refreshRevision(context.Background(), 2); !errors.Is(e, store.ErrRevisionConflict) {
+	if _, e = loaded.refreshRevision(context.Background(), 2); e != nil {
 		t.Fatal(e)
 	}
 	if _, e = loaded.checkRevision(context.Background(), 3, "al_two", false); e != nil {

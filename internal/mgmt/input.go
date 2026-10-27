@@ -3,8 +3,8 @@ package mgmt
 import (
 	"bytes"
 	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,13 +14,16 @@ import (
 
 type object map[string]json.RawMessage
 
-const maxBody = 4 << 20
+const maxBody = 1 << 20
 
 func decodeObject(body []byte) (object, []policy.Detail) {
 	if len(body) > maxBody {
 		return nil, []policy.Detail{detail("body", "body_too_large", "Management request is too large")}
 	}
 	var obj object
+	if len(bytes.TrimSpace(body)) == 0 {
+		return object{}, nil
+	}
 	if json.Unmarshal(body, &obj) != nil || obj == nil {
 		return nil, []policy.Detail{detail("body", "invalid_json", "Expected one JSON object")}
 	}
@@ -110,49 +113,135 @@ func fullState(obj object, current policy.State) (policy.State, []policy.Detail)
 			details = append(details, detail(key, "required", "Field is required for a full state replacement"))
 		}
 	}
+	if raw, ok := obj["settings"]; ok {
+		var settings object
+		if json.Unmarshal(raw, &settings) == nil && settings != nil {
+			for _, name := range []string{"whitelist_enabled", "rewrite_response_model", "refresh_interval_seconds"} {
+				if _, ok := settings[name]; !ok {
+					details = append(details, detail("settings."+name, "required", "Setting is required"))
+				}
+			}
+		}
+	}
 	base := policy.State{Schema: current.Schema, Revision: current.Revision, UpdatedAt: current.UpdatedAt}
 	draft, patchDetails := draftState(obj, base)
 	details = append(details, patchDetails...)
-	if raw, ok := obj["schema"]; ok {
-		var schema int
-		if json.Unmarshal(raw, &schema) != nil || schema != current.Schema {
-			details = append(details, detail("schema", "invalid_schema", "Unsupported state schema"))
-		}
-	}
 	if len(details) == 0 {
-		details = assignIDs(&draft, current, true)
+		details = assignIDs(&draft)
 	}
 	return draft, details
 }
 
+// Only editable fields participate in parsing; unknown and runtime fields are ignored.
 func draftState(obj object, saved policy.State) (policy.State, []policy.Detail) {
-	// StateCopy already detached saved's slices and pointers from the live snapshot.
 	var details []policy.Detail
-	details = append(details, field(obj, "settings", &saved.Settings)...)
-	details = append(details, field(obj, "families", &saved.Families)...)
-	details = append(details, field(obj, "aliases", &saved.Aliases)...)
-	details = append(details, field(obj, "rules", &saved.Rules)...)
+	if raw, ok := obj["settings"]; ok {
+		var settings object
+		if json.Unmarshal(raw, &settings) != nil || settings == nil {
+			details = append(details, detail("settings", "invalid_type", "Settings must be an object"))
+		} else {
+			for name, target := range map[string]any{"whitelist_enabled": &saved.Settings.WhitelistEnabled,
+				"rewrite_response_model": &saved.Settings.RewriteResponseModel, "refresh_interval_seconds": &saved.Settings.RefreshIntervalSeconds} {
+				for _, d := range field(settings, name, target) {
+					d.Path = "settings." + d.Path
+					details = append(details, d)
+				}
+			}
+		}
+	}
+	for _, section := range []string{"families", "aliases", "rules"} {
+		raw, ok := obj[section]
+		if !ok {
+			continue
+		}
+		var entries []object
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &entries) != nil {
+			details = append(details, detail(section, "invalid_type", "Expected an array of objects"))
+			continue
+		}
+		switch section {
+		case "families":
+			saved.Families = []policy.Family{}
+		case "aliases":
+			saved.Aliases = []policy.Alias{}
+		case "rules":
+			saved.Rules = []policy.Rule{}
+		}
+		for i, entry := range entries {
+			path := section + "[" + strconv.Itoa(i) + "]"
+			if entry == nil {
+				details = append(details, detail(path, "invalid_type", "Expected an object"))
+				continue
+			}
+			f, a, r := policy.Family{AllowDated: true}, policy.Alias{Enabled: true}, policy.Rule{Enabled: true}
+			var fields map[string]any
+			switch section {
+			case "families":
+				fields = map[string]any{"id": &f.ID, "name": &f.Name, "template": &f.Template, "provider": &f.Provider, "allow_dated": &f.AllowDated}
+			case "aliases":
+				fields = map[string]any{"id": &a.ID, "name": &a.Name, "mode": &a.Mode, "target": &a.Target, "provider": &a.Provider, "enabled": &a.Enabled, "expose_original": &a.ExposeOriginal, "rewrite_response_model": &a.RewriteResponseModel}
+			case "rules":
+				fields = map[string]any{"id": &r.ID, "enabled": &r.Enabled, "kind": &r.Kind, "value": &r.Value, "note": &r.Note}
+			}
+			for name, target := range fields {
+				if name == "rewrite_response_model" && bytes.Equal(bytes.TrimSpace(entry[name]), []byte("null")) {
+					continue
+				}
+				for _, d := range field(entry, name, target) {
+					d.Path = path + "." + d.Path
+					details = append(details, d)
+				}
+			}
+			if section == "aliases" {
+				if raw, ok := entry["auto"]; ok {
+					var auto object
+					if json.Unmarshal(raw, &auto) != nil || auto == nil {
+						details = append(details, detail(path+".auto", "invalid_type", "Expected an object"))
+					} else {
+						for name, target := range map[string]any{"family": &a.Auto.Family, "include_prerelease": &a.Auto.IncludePrerelease, "health_check": &a.Auto.HealthCheck} {
+							for _, d := range field(auto, name, target) {
+								d.Path = path + ".auto." + d.Path
+								details = append(details, d)
+							}
+						}
+					}
+				}
+			}
+			switch section {
+			case "families":
+				saved.Families = append(saved.Families, f)
+			case "aliases":
+				saved.Aliases = append(saved.Aliases, a)
+			case "rules":
+				saved.Rules = append(saved.Rules, r)
+			}
+		}
+	}
 	return saved, details
 }
 
-func assignIDs(state *policy.State, current policy.State, persisted bool) []policy.Detail {
-	known := map[string]map[string]bool{"families": {}, "aliases": {}, "rules": {}}
-	for _, f := range current.Families {
-		known["families"][f.ID] = true
+// ValidateState permits offline targets to remain repairable, while preserving all
+// structural, collision and reference checks in the shared policy engine.
+func ValidateState(state policy.State, catalog policy.Catalog) []policy.Detail {
+	details := []policy.Detail{}
+	for _, d := range policy.Validate(state, catalog) {
+		if d.Code != "unknown_target" {
+			details = append(details, d)
+		}
 	}
-	for _, a := range current.Aliases {
-		known["aliases"][a.ID] = true
+	for i, a := range state.Aliases {
+		if strings.Contains(a.Name, "/") {
+			details = append(details, detail(fmt.Sprintf("aliases[%d].name", i), "invalid_alias_name", "Alias names cannot contain a slash"))
+		}
 	}
-	for _, r := range current.Rules {
-		known["rules"][r.ID] = true
-	}
+	return details
+}
+
+func assignIDs(state *policy.State) []policy.Detail {
 	var details []policy.Detail
 	assign := func(id *string, kind, prefix string, index int) {
 		path := kind + "[" + strconv.Itoa(index) + "].id"
 		if *id != "" {
-			if persisted && kind == "aliases" && !known[kind][*id] {
-				details = append(details, detail(path, "server_generated_id", "Omit the ID for a new entry"))
-			}
 			return
 		}
 		var token [16]byte
@@ -160,7 +249,9 @@ func assignIDs(state *policy.State, current policy.State, persisted bool) []poli
 			details = append(details, detail(path, "id_unavailable", "Could not generate an entry ID"))
 			return
 		}
-		*id = prefix + hex.EncodeToString(token[:])
+		token[6] = (token[6] & 0x0f) | 0x40
+		token[8] = (token[8] & 0x3f) | 0x80
+		*id = prefix + fmt.Sprintf("%x-%x-%x-%x-%x", token[:4], token[4:6], token[6:8], token[8:10], token[10:])
 	}
 	for i := range state.Families {
 		assign(&state.Families[i].ID, "families", "fam_", i)

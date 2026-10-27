@@ -169,7 +169,7 @@ func TestManagementRoundtripImmediatelyChangesPolicy(t *testing.T) {
 	}
 	aliasID := saved["aliases"].([]any)[0].(map[string]any)["id"].(string)
 	ruleID := saved["rules"].([]any)[0].(map[string]any)["id"].(string)
-	if !strings.HasPrefix(aliasID, "al_") || len(aliasID) != 35 || !strings.HasPrefix(ruleID, "r_") || len(ruleID) != 34 {
+	if !strings.HasPrefix(aliasID, "al_") || len(aliasID) != 39 || !strings.HasPrefix(ruleID, "r_") || len(ruleID) != 38 {
 		t.Fatalf("IDs=%q %q", aliasID, ruleID)
 	}
 	snapshot := f.current.Load()
@@ -187,7 +187,7 @@ func TestManagementRoundtripImmediatelyChangesPolicy(t *testing.T) {
 		t.Fatal("ID changed on roundtrip")
 	}
 	conflict := decode(t, call(t, f.h, "PUT", "/state", saved), 409)
-	if conflict["current"].(map[string]any)["revision"] != float64(2) || f.saves != 2 {
+	if conflict["state"].(map[string]any)["revision"] != float64(2) || f.saves != 2 {
 		t.Fatalf("stale response %v", conflict)
 	}
 }
@@ -207,9 +207,9 @@ func TestValidationKeepsState(t *testing.T) {
 	}
 	state = before.State
 	state.Aliases = []policy.Alias{{ID: "client-picked", Name: "sol", Enabled: true, Mode: "pinned", Target: "gpt-6.1-sol"}}
-	decode(t, call(t, f.h, "PUT", "/state", state), 422)
-	if f.saves != 0 {
-		t.Fatal("client selected alias ID saved")
+	decode(t, call(t, f.h, "PUT", "/state", state), 200)
+	if f.saves != 1 {
+		t.Fatal("stable alias ID was rejected")
 	}
 }
 
@@ -220,7 +220,7 @@ func TestDraftPreviewExplainAndCounts(t *testing.T) {
 	if !reflect.DeepEqual(view["public_models"], []any{"gpt-6.1-sol", "gpt-6.2-sol"}) {
 		t.Fatalf("preview=%v", view)
 	}
-	if !reflect.DeepEqual(view["rules"].([]any)[0].(map[string]any)["matches"], view["public_models"]) {
+	if !reflect.DeepEqual(view["rules"].([]any)[0].(map[string]any)["matches"], []any{"gpt-6.1-sol", "gpt-6.2-sol", "gpt-6.3-sol"}) {
 		t.Fatalf("rule matches=%v", view)
 	}
 	explanation := decode(t, call(t, f.h, "POST", "/explain", map[string]any{"model": "other-model", "draft": draft}), 200)
@@ -232,7 +232,7 @@ func TestDraftPreviewExplainAndCounts(t *testing.T) {
 	}
 	view = decode(t, call(t, f.h, "GET", "/overview", nil), 200)
 	counts := view["counts"].(map[string]any)
-	if counts["public_models"] != float64(2) || counts["public_aliases"] != float64(0) || view["version"] != "test-version" || view["host_schema"] != float64(7) {
+	if counts["public_models"] != float64(2) || counts["public_aliases"] != float64(0) || view["plugin_version"] != "test-version" || view["host_schema"] != float64(7) {
 		t.Fatalf("overview=%v", view)
 	}
 	if len(view["recent_auto_updates"].([]any)) != 1 {
@@ -245,14 +245,14 @@ func TestDraftPreviewExplainAndCounts(t *testing.T) {
 }
 
 func TestRevisionsRequiredOnEveryMutation(t *testing.T) {
-	for _, path := range []string{"/state", "/catalog/refresh", "/aliases/check", "/history/restore"} {
+	for _, path := range []string{"/state", "/aliases/check", "/history/restore"} {
 		t.Run(path, func(t *testing.T) {
 			f := setup(t)
 			method := "POST"
 			if path == "/state" {
 				method = "PUT"
 			}
-			decode(t, call(t, f.h, method, path, map[string]any{}), 422)
+			decode(t, call(t, f.h, method, path, map[string]any{}), 409)
 			decode(t, call(t, f.h, method, path, map[string]any{"revision": 99}), 409)
 			if f.saves+f.checks+f.refreshes+f.restores != 0 {
 				t.Fatal("invalid revision invoked callback")
@@ -288,14 +288,14 @@ func TestIfMatchAndInvalidRevisions(t *testing.T) {
 	resp := f.h.Handle(context.Background(), pluginapi.ManagementRequest{Method: "PUT", Path: BasePath + "/state", Headers: http.Header{"if-match": {`"0"`}}, Body: body})
 	decode(t, resp, 200)
 	for _, value := range []any{nil, -1, 0.5, "1", true} {
-		decode(t, call(t, f.h, "POST", "/catalog/refresh", map[string]any{"revision": value}), 422)
+		decode(t, call(t, f.h, "POST", "/aliases/check", map[string]any{"revision": value}), 409)
 	}
 	for _, header := range []string{"1", `W/"1"`, "*", `"-1"`, `"1", "2"`} {
-		r := f.h.Handle(context.Background(), pluginapi.ManagementRequest{Method: "POST", Path: BasePath + "/catalog/refresh", Headers: http.Header{"If-Match": {header}}, Body: []byte(`{}`)})
-		decode(t, r, 422)
+		r := f.h.Handle(context.Background(), pluginapi.ManagementRequest{Method: "POST", Path: BasePath + "/aliases/check", Headers: http.Header{"If-Match": {header}}, Body: []byte(`{}`)})
+		decode(t, r, 409)
 	}
-	r := f.h.Handle(context.Background(), pluginapi.ManagementRequest{Method: "POST", Path: BasePath + "/catalog/refresh", Headers: http.Header{"If-Match": {`"0"`}}, Body: []byte(`{"revision":1}`)})
-	decode(t, r, 422)
+	r := f.h.Handle(context.Background(), pluginapi.ManagementRequest{Method: "POST", Path: BasePath + "/aliases/check", Headers: http.Header{"If-Match": {`"0"`}}, Body: []byte(`{"revision":1}`)})
+	decode(t, r, 409)
 }
 
 func TestCallbackConflictAndSanitizedErrors(t *testing.T) {
@@ -344,18 +344,23 @@ func TestStaticResourcesNeverReadStateOrCallbacks(t *testing.T) {
 
 func TestHistoryQueriesAndInputBoundaries(t *testing.T) {
 	f := setup(t)
-	r := f.h.Handle(context.Background(), pluginapi.ManagementRequest{Method: "GET", Path: BasePath + "/history", Query: url.Values{"limit": {"2"}, "before": {"cursor"}}})
+	r := f.h.Handle(context.Background(), pluginapi.ManagementRequest{Method: "GET", Path: BasePath + "/history", Query: url.Values{"limit": {"2"}, "before": {"history1"}}})
 	decode(t, r, 200)
-	if f.historyLimit != 2 || f.historyBefore != "cursor" {
+	if f.historyLimit != 1000 || f.historyBefore != "" {
 		t.Fatal("query was not forwarded")
 	}
 	for _, limit := range []string{"0", "1001", "many"} {
 		r = f.h.Handle(context.Background(), pluginapi.ManagementRequest{Method: "GET", Path: BasePath + "/history", Query: url.Values{"limit": {limit}}})
-		decode(t, r, 422)
+		decode(t, r, 400)
 	}
-	for _, body := range []string{"null", "[]", "{} {}", `{"dry_run":null}`, `{"dry_run":"true"}`, strings.Repeat(" ", maxBody+1)} {
-		r = f.h.Handle(context.Background(), pluginapi.ManagementRequest{Method: "POST", Path: BasePath + "/aliases/check", Body: []byte(body)})
-		decode(t, r, 422)
+	for _, tc := range []struct {
+		body   string
+		status int
+	}{
+		{"null", 400}, {"[]", 400}, {"{} {}", 400}, {`{"dry_run":null}`, 422}, {`{"dry_run":"true"}`, 422}, {strings.Repeat(" ", maxBody+1), 413},
+	} {
+		r = f.h.Handle(context.Background(), pluginapi.ManagementRequest{Method: "POST", Path: BasePath + "/aliases/check", Body: []byte(tc.body)})
+		decode(t, r, tc.status)
 	}
 	decode(t, call(t, f.h, "GET", "/state/extra", nil), 404)
 	decode(t, call(t, f.h, "DELETE", "/state", nil), 405)

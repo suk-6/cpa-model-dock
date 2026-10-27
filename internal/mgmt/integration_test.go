@@ -105,7 +105,7 @@ func TestOwnerRevisionRaceReturnsLatestState(t *testing.T) {
 				return policy.Catalog{}, conflict(expected)
 			}
 			out := decode(t, call(t, f.h, "POST", path, map[string]any{"revision": 0}), 409)
-			if out["current"].(map[string]any)["revision"] != float64(1) || f.checks != 0 || f.refreshes != 0 {
+			if out["state"].(map[string]any)["revision"] != float64(1) || f.checks != 0 || f.refreshes != 0 {
 				t.Fatalf("race did not return latest state: %v", out)
 			}
 		})
@@ -195,10 +195,10 @@ func TestAliasStatusAlwaysCoversCurrentAliasesOnly(t *testing.T) {
 		t.Fatalf("stale alias leaked: %v", statuses)
 	}
 	cached := statuses["al_cached"].(map[string]any)
-	if cached["current_target"] != "gpt-6.1-sol" || cached["target_routable"] != true || cached["reason"] != "pinned" || cached["candidates"] == nil {
+	if cached["current_target"] != "gpt-6.1-sol" || cached["target_routable"] != true || cached["reason"].(map[string]any)["code"] != "pinned" || cached["candidates"] == nil {
 		t.Fatalf("cached runtime status did not reflect live state: %v", cached)
 	}
-	for _, key := range []string{"current_target", "candidates", "last_checked_at", "last_result", "reason", "message", "target_routable"} {
+	for _, key := range []string{"current_target", "candidates", "last_result", "reason", "target_routable"} {
 		if statuses["al_new"].(map[string]any)[key] == nil {
 			t.Fatalf("new alias is missing %s: %v", key, statuses)
 		}
@@ -226,7 +226,7 @@ func TestAbsentCallbacksAndEmptyAliasStatus(t *testing.T) {
 func TestHistoryWrapsSlicesAndPreservesLargeRevisions(t *testing.T) {
 	f := setup(t)
 	f.h.config.History = func(int, string) any {
-		return []store.Entry{{ID: "9007199254740993", Actor: "auto", After: policy.State{Revision: 9007199254740993}}}
+		return []store.Entry{{ID: "9007199254740993", Actor: "auto", Kind: "alias_target", After: policy.State{Revision: 9007199254740993}}}
 	}
 	r := call(t, f.h, "GET", "/history", nil)
 	out := decode(t, r, 200)
@@ -275,8 +275,8 @@ func TestNewFamilyReferencesCanBeSavedInOneMutation(t *testing.T) {
 	if d := f.current.Load().Decide("sol"); !d.Allowed {
 		t.Fatal(d)
 	}
-	// Alias IDs remain server-owned even though family/rule IDs support references.
+	// Stable client IDs are accepted for aliases as well as families/rules.
 	next := f.current.Load().StateCopy()
 	next.Aliases = append(next.Aliases, policy.Alias{ID: "client-alias", Name: "other", Enabled: true, Mode: "pinned", Target: "gpt-6.2-sol"})
-	decode(t, call(t, f.h, "PUT", "/state", next), 422)
+	decode(t, call(t, f.h, "PUT", "/state", next), 200)
 }

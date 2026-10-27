@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/cpa-model-dock/cpa-model-dock/internal/version"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/cpa-model-dock/cpa-model-dock/internal/policy"
 	"github.com/cpa-model-dock/cpa-model-dock/internal/store"
@@ -76,39 +76,18 @@ func (h *Handler) aliasStatus(ctx context.Context, s *policy.Snapshot) any {
 		}
 		statuses[alias.ID] = map[string]any{
 			"current_target": alias.Target, "target_routable": routable,
-			"candidates": []any{}, "last_result": "kept", "reason": "not_checked",
-			"last_checked_at": time.Time{}, "message": "Alias has not been evaluated",
+			"candidates": []any{}, "last_result": "kept", "reason": reasonView("not_checked", "Alias has not been evaluated"),
+			"last_checked_at": nil,
 		}
 	}
-	if len(statuses) == 0 {
-		return statuses
-	}
-	var runtime any
-	if h.config.AliasStatus != nil {
-		runtime = h.config.AliasStatus()
-	} else if (h.config.Check != nil || h.config.CheckRevision != nil) && len(statuses) != 0 {
-		result, err := h.evaluate(ctx, s.StateCopy().Revision, "", true)
-		if err == nil {
-			runtime = result
-		}
-	}
-	if runtime != nil {
-		values := jsonObject(runtime)
-		for _, key := range []string{"alias_status", "statuses", "results"} {
-			if nested, ok := values[key].(map[string]any); ok {
-				values = nested
-				break
-			}
-		}
-		for id := range statuses {
+	if len(statuses) != 0 && h.config.AliasStatus != nil {
+		values := jsonObject(h.config.AliasStatus())
+		for id, base := range statuses {
 			if value, ok := values[id].(map[string]any); ok {
-				status := statuses[id].(map[string]any)
-				for key, value := range value {
-					// Cached evaluation can predate a state save or catalog refresh.
-					if key != "current_target" && key != "target_routable" && value != nil {
-						status[key] = value
-					}
-				}
+				status := statusView(value)
+				status["current_target"] = base.(map[string]any)["current_target"]
+				status["target_routable"] = base.(map[string]any)["target_routable"]
+				statuses[id] = status
 			}
 		}
 	}
@@ -141,16 +120,16 @@ func (h *Handler) overview(ctx context.Context, s *policy.Snapshot) any {
 		warnings = append(warnings, "Policy is unavailable; model requests are denied")
 	}
 	for _, alias := range state.Aliases {
-		if alias.Enabled && s.Decide(alias.Name).Allowed {
-			mappings = append(mappings, map[string]any{"id": alias.ID, "name": alias.Name, "target": alias.Target, "provider": alias.Provider})
+		if alias.Enabled {
+			mappings = append(mappings, map[string]any{"alias": alias.Name, "target": alias.Target})
 		}
 	}
 	recent := []any{}
 	if h.config.History != nil {
-		entries := historyEntries(h.config.History(100, ""))
+		entries := historyEntries(h.config.History(store.HistoryLimit, ""))
 		for _, entry := range entries {
 			row, ok := entry.(map[string]any)
-			if ok && row["actor"] == "auto" {
+			if ok && row["actor"] == "auto" && row["kind"] == "alias_target" {
 				recent = append(recent, entry)
 				if len(recent) == 5 {
 					break
@@ -159,12 +138,12 @@ func (h *Handler) overview(ctx context.Context, s *policy.Snapshot) any {
 		}
 	}
 	return map[string]any{
-		"version": h.config.Version, "host_schema": h.config.HostSchema,
+		"plugin_version": h.config.Version, "host_schema": h.config.HostSchema,
 		"policy_enabled": s.Available(), "whitelist_enabled": state.Settings.WhitelistEnabled,
 		"counts":          map[string]int{"public_models": len(p.PublicModels), "public_aliases": len(p.PublicAliases)},
 		"active_mappings": mappings, "recent_auto_updates": recent,
-		"catalog":  map[string]any{"last_refresh_at": catalog.RefreshedAt, "ok": catalog.OK, "error": catalog.Error},
-		"guard":    map[string]any{"enabled": h.config.Guard, "active": h.config.Guard && state.Settings.WhitelistEnabled, "verified": false, "mandatory_gate": false},
+		"catalog":  map[string]any{"last_refresh_at": catalog.RefreshedAt, "ok": catalog.OK, "error": nullableError(catalog.Error)},
+		"guard":    map[string]any{"enabled": h.config.Guard, "verified": false, "limitations": warnings[:2]},
 		"warnings": warnings,
 	}
 }
@@ -176,17 +155,17 @@ func catalogView(s *policy.Snapshot, catalog policy.Catalog) any {
 		providers := append([]string{}, model.Providers...)
 		models = append(models, map[string]any{
 			"id": model.ID, "providers": providers, "credential_count": model.CredentialCount,
-			"routable": model.Routable, "public": model.Routable && d.Allowed, "reason": d.Reason,
+			"routable": model.Routable, "public": model.Routable && d.Allowed, "reason": catalogReason(model, d),
 		})
 	}
-	return map[string]any{"refreshed_at": catalog.RefreshedAt, "ok": catalog.OK, "error": catalog.Error, "models": models}
+	return map[string]any{"refreshed_at": catalog.RefreshedAt, "ok": catalog.OK, "error": nullableError(catalog.Error), "models": models}
 }
 
 func (h *Handler) validate(body object) pluginapi.ManagementResponse {
 	s := h.snapshot()
 	state, details := fullState(body, s.StateCopy())
 	if len(details) == 0 {
-		details = policy.Validate(state, s.CatalogCopy())
+		details = ValidateState(state, s.CatalogCopy())
 	}
 	if details == nil {
 		details = []policy.Detail{}
@@ -202,10 +181,10 @@ func (h *Handler) preview(body object) pluginapi.ManagementResponse {
 	s := h.snapshot()
 	state, details := draftState(body, s.StateCopy())
 	if len(details) == 0 {
-		details = assignIDs(&state, s.StateCopy(), false)
+		details = assignIDs(&state)
 	}
 	if len(details) == 0 {
-		details = policy.Validate(state, s.CatalogCopy())
+		details = ValidateState(state, s.CatalogCopy())
 	}
 	if len(details) != 0 {
 		return invalid(details)
@@ -214,12 +193,22 @@ func (h *Handler) preview(body object) pluginapi.ManagementResponse {
 	p := public(draft)
 	rules := []any{}
 	for _, rule := range state.Rules {
-		one := draft.StateCopy()
-		one.Settings.WhitelistEnabled = true
-		one.Rules = []policy.Rule{rule}
-		engine := policy.New(one, s.CatalogCopy(), true)
-		matches := public(engine)
-		all := append(matches.PublicModels, matches.PublicAliases...)
+		all := []string{}
+		if rule.Enabled {
+			if rule.Kind == "alias" {
+				for _, alias := range state.Aliases {
+					if draft.Normalize(alias.Name) == draft.Normalize(rule.Value) {
+						all = append(all, alias.Name)
+					}
+				}
+			} else {
+				for _, model := range s.CatalogCopy().Models {
+					if ruleMatch(draft, rule, model) {
+						all = append(all, model.ID)
+					}
+				}
+			}
+		}
 		sort.Strings(all)
 		rules = append(rules, map[string]any{"id": rule.ID, "matches": all})
 	}
@@ -240,11 +229,11 @@ func (h *Handler) explain(body object) pluginapi.ManagementResponse {
 		} else {
 			state, errs := draftState(draft, s.StateCopy())
 			if len(errs) == 0 {
-				errs = assignIDs(&state, s.StateCopy(), false)
+				errs = assignIDs(&state)
 			}
 			details = append(details, errs...)
 			if len(errs) == 0 {
-				details = append(details, policy.Validate(state, s.CatalogCopy())...)
+				details = append(details, ValidateState(state, s.CatalogCopy())...)
 			}
 			if len(details) == 0 {
 				s = policy.New(state, s.CatalogCopy(), true)
@@ -254,7 +243,23 @@ func (h *Handler) explain(body object) pluginapi.ManagementResponse {
 	if len(details) != 0 {
 		return invalid(details)
 	}
-	return response(http.StatusOK, s.Decide(model))
+	d := s.Decide(model)
+	steps := []any{}
+	for _, code := range d.Steps {
+		message := code
+		if code == "normalized" {
+			message = "Matched as " + s.Normalize(model)
+		}
+		if code == d.Code {
+			message = d.Reason
+		}
+		steps = append(steps, reasonView(code, message))
+	}
+	view := map[string]any{"allowed": d.Allowed, "status": d.Status, "code": d.Code, "reason": d.Reason, "steps": steps}
+	if d.ResolvedTarget != "" {
+		view["resolved_target"] = d.ResolvedTarget
+	}
+	return response(http.StatusOK, view)
 }
 
 func (h *Handler) check(ctx context.Context, body object, dryRun bool, s *policy.Snapshot) pluginapi.ManagementResponse {
@@ -278,7 +283,17 @@ func (h *Handler) check(ctx context.Context, body object, dryRun bool, s *policy
 	if err != nil {
 		return h.callbackError(err)
 	}
-	return response(http.StatusOK, result)
+	values := jsonObject(result)
+	results := []any{}
+	for _, alias := range s.StateCopy().Aliases {
+		if value, ok := values[alias.ID].(map[string]any); ok {
+			status := statusView(value)
+			delete(status, "target_routable")
+			status["alias_id"] = alias.ID
+			results = append(results, status)
+		}
+	}
+	return response(http.StatusOK, map[string]any{"results": results, "revision": h.snapshot().StateCopy().Revision})
 }
 
 func (h *Handler) evaluate(ctx context.Context, expected int64, aliasID string, dryRun bool) (any, error) {
@@ -307,16 +322,142 @@ func (h *Handler) history(req pluginapi.ManagementRequest) pluginapi.ManagementR
 	limit := 100
 	if values, ok := req.Query["limit"]; ok {
 		if len(values) != 1 {
-			return invalid([]policy.Detail{detail("limit", "invalid_limit", "Limit must be a positive integer")})
+			return failure(400, "invalid_limit", "Use one integer limit between 1 and 1000")
 		}
 		parsed, err := strconv.Atoi(values[0])
 		if err != nil || parsed < 1 || parsed > store.HistoryLimit {
-			return invalid([]policy.Detail{detail("limit", "invalid_limit", "Limit must be between 1 and 1000")})
+			return failure(400, "invalid_limit", "Use one integer limit between 1 and 1000")
 		}
 		limit = parsed
 	}
-	if h.config.History == nil {
-		return response(http.StatusOK, map[string]any{"entries": []any{}})
+	if len(req.Query["before"]) > 1 {
+		return failure(400, "invalid_cursor", "Use one history cursor")
 	}
-	return response(http.StatusOK, map[string]any{"entries": historyEntries(h.config.History(limit, req.Query.Get("before")))})
+	entries := []any{}
+	if h.config.History != nil {
+		entries = historyEntries(h.config.History(store.HistoryLimit, ""))
+	}
+	if before := req.Query.Get("before"); before != "" {
+		index := -1
+		for i, entry := range entries {
+			if row, ok := entry.(map[string]any); ok && row["id"] == before {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			return failure(400, "invalid_cursor", "Unknown history cursor")
+		}
+		entries = entries[index+1:]
+	}
+	var next any
+	if len(entries) > limit {
+		entries = entries[:limit]
+		next = entries[len(entries)-1].(map[string]any)["id"]
+	}
+	return response(http.StatusOK, map[string]any{"entries": entries, "next_before": next})
+}
+
+func reasonView(code, message string) map[string]any {
+	return map[string]any{"code": code, "message": message}
+}
+func nullableError(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+func catalogReason(model policy.Model, d policy.Decision) any {
+	if !model.Routable {
+		return reasonView("not_routable", "No enabled credential advertises this model")
+	}
+	return reasonView(d.Code, d.Reason)
+}
+
+// statusView is the wire boundary: internal evaluator structs are never exposed.
+func statusView(value map[string]any) map[string]any {
+	code, _ := value["reason"].(string)
+	message, _ := value["message"].(string)
+	if reason, ok := value["reason"].(map[string]any); ok {
+		code, _ = reason["code"].(string)
+		message, _ = reason["message"].(string)
+	}
+	switch code {
+	case "newer_candidate":
+		code = "newer_version"
+	case "no_newer_candidate":
+		code = "up_to_date"
+	case "health_check_unavailable":
+		code = "health_check_unverified"
+	}
+	if code == "" {
+		code = "not_checked"
+	}
+	if message == "" {
+		message = code
+	}
+	result := value["last_result"]
+	if result == nil {
+		result = "kept"
+	}
+	if code == "disabled" || code == "pinned" {
+		result = "kept"
+	}
+	candidates := []any{}
+	if rows, ok := value["candidates"].([]any); ok {
+		for _, row := range rows {
+			if candidate, ok := row.(map[string]any); ok {
+				code, _ := candidate["reason"].(string)
+				if code == "prerelease_excluded" {
+					continue
+				}
+				if code == "" {
+					code = "candidate"
+				}
+				if code == "chosen" {
+					code = "selected"
+				}
+				if code == "unroutable" || code == "provider_mismatch" {
+					code = "not_routable"
+				}
+				if candidate["chosen"] == true {
+					code = "selected"
+				}
+				candidates = append(candidates, map[string]any{"id": candidate["id"], "version": candidate["version"], "routable": candidate["routable"], "chosen": candidate["chosen"], "reason": reasonView(code, code)})
+			}
+		}
+	}
+	return map[string]any{"current_target": value["current_target"], "candidates": candidates, "last_checked_at": value["last_checked_at"], "last_result": result, "reason": reasonView(code, message), "target_routable": value["target_routable"]}
+}
+
+func ruleMatch(s *policy.Snapshot, rule policy.Rule, model policy.Model) bool {
+	if rule.Kind == "family" {
+		family, ok := s.Family(rule.Value)
+		if !ok {
+			return false
+		}
+		template, err := version.Compile(family.Template, family.AllowDated)
+		if err != nil {
+			return false
+		}
+		value, ok := template.Parse(s.Normalize(model.ID))
+		if !ok || value.Prerelease != "" {
+			return false
+		}
+		if family.Provider != "" {
+			for _, provider := range model.Providers {
+				if strings.EqualFold(provider, family.Provider) {
+					return true
+				}
+			}
+			return false
+		}
+		return true
+	}
+	// Remove alias hiding and routability from the individual rule match list.
+	state := s.StateCopy()
+	state.Aliases = nil
+	state.Settings.WhitelistEnabled = true
+	state.Rules = []policy.Rule{rule}
+	return policy.New(state, s.CatalogCopy(), true).Decide(model.ID).Allowed
 }
