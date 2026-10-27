@@ -104,6 +104,7 @@ func run() (exitCode int) {
 		return 0
 	}
 	h.pluginChecks()
+	h.alphaSafetyChecks()
 	h.uiChecks()
 	return 0
 }
@@ -524,6 +525,12 @@ func (h *harness) baseline() {
 			return "translated protocol reaches OpenAI-compatible upstream"
 		})
 	}
+	h.check("Alpha default pass-through", func() string {
+		r := h.http("POST", "/v1/alpha/search", map[string]any{"model": "cpa-native-sol", "query": "fixture"}, h.clientKey)
+		wantStatus(r, 503)
+		require(!bytes.Contains(r.body, []byte("unsupported Codex Alpha Search model route target")) && bytes.Contains(r.body, []byte("auth_not_found")), "default Alpha unexpectedly intercepted: %s", short(r.body))
+		return "host auth_not_found with no Codex credential; no plugin denial route"
+	})
 	for _, p := range []string{"GET /v1/realtime", "POST /v1/realtime", "POST /v1/live"} {
 		fields := strings.SplitN(p, " ", 2)
 		r, err := h.guardRequest(fields[0], fields[1])

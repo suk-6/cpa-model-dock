@@ -108,7 +108,7 @@ func TestProtocolDenialsAreSafe(t *testing.T) {
 func TestRouteAliasAndAlphaSentinel(t *testing.T) {
 	s := fixture("gpt-6.1-sol", true)
 	h := hooksFor(t, s)
-	for _, format := range []string{"openai", "codex-alpha-search"} {
+	for _, format := range []string{"openai"} {
 		out := h.Route(pluginapi.ModelRouteRequest{RequestedModel: "work/friendly(high)", SourceFormat: format, AvailableProviders: []string{"codex"}})
 		if !out.Handled || out.TargetKind != pluginapi.ModelRouteTargetProvider || out.Target != "codex" || out.TargetModel != "gpt-6.1-sol(high)" {
 			t.Fatalf("alias route: %+v", out)
@@ -321,7 +321,7 @@ func TestFrontendGuardDoesNotAuthenticate(t *testing.T) {
 		if got := h.Frontend(pluginapi.FrontendAuthRequest{Path: path, Body: []byte(`{"model":"gpt-6.1-sol"}`)}); got.DenyStatusCode != 404 {
 			t.Fatalf("Alpha hidden direct model: %+v", got)
 		}
-		if got := h.Frontend(pluginapi.FrontendAuthRequest{Path: path, Body: []byte("compressed"), DecodedBody: []byte(`{"model":"friendly"}`)}); got.DenyStatusCode != 0 || got.Authenticated {
+		if got := h.Frontend(pluginapi.FrontendAuthRequest{Path: path, Body: []byte("compressed"), DecodedBody: []byte(`{"model":"friendly"}`)}); got.DenyStatusCode != 503 || got.Authenticated {
 			t.Fatalf("Alpha decoded alias: %+v", got)
 		}
 	}
@@ -600,5 +600,43 @@ func TestCatalogHostEntriesDoNotRequireInventory(t *testing.T) {
 	out := h.Response(pluginapi.ResponseInterceptRequest{SourceFormat: "openai", Body: []byte(`{"data":[{"id":"gpt-6.1-sol"},{"id":"other"}]}`)})
 	if bytes.Contains(out.Body, []byte("gpt-6.1-sol")) || bytes.Contains(out.Body, []byte("friendly")) || !bytes.Contains(out.Body, []byte("other")) {
 		t.Fatalf("unknown alias target must stay hidden without injecting alias: %s", out.Body)
+	}
+}
+
+func TestAlphaCannotAuthorizePrivateCredentialMappings(t *testing.T) {
+	state := policy.DefaultState()
+	state.Settings.WhitelistEnabled = true
+	state.Rules = []policy.Rule{{ID: "native", Enabled: true, Kind: "exact", Value: "cpa-native-sol"}, {ID: "raw", Enabled: true, Kind: "exact", Value: "gpt-6.1-sol"}, {ID: "prefix", Enabled: true, Kind: "exact", Value: "prefix/gpt-6.1-sol"}}
+	catalog := policy.Catalog{OK: true, Models: []policy.Model{{ID: "cpa-native-sol", Routable: true, Providers: []string{"codex"}}, {ID: "gpt-6.1-sol", Routable: true, Providers: []string{"codex"}}, {ID: "prefix/gpt-6.1-sol", Routable: true, Providers: []string{"codex"}}}}
+	h := hooksFor(t, policy.New(state, catalog, true))
+	for _, name := range []string{"cpa-native-sol", "gpt-6.1-sol", "prefix/gpt-6.1-sol"} {
+		if !h.latest().Decide(name).Allowed {
+			t.Fatal("regression fixture not allowed before resolution")
+		}
+		got := h.Route(pluginapi.ModelRouteRequest{RequestedModel: name, SourceFormat: "codex-alpha-search", AvailableProviders: []string{"codex"}})
+		if !got.Handled || got.TargetKind != pluginapi.ModelRouteTargetSelf || got.Reason != "alpha_destination_unverifiable" {
+			t.Fatalf("private mapping may bypass authorization: %s %+v", name, got)
+		}
+	}
+	// With no restrictions there is nothing to authorize after private mapping.
+	state.Settings.WhitelistEnabled = false
+	plain := hooksFor(t, policy.New(state, catalog, true))
+	if got := plain.Route(pluginapi.ModelRouteRequest{RequestedModel: "cpa-native-sol", SourceFormat: "codex-alpha-search"}); got.Handled {
+		t.Fatalf("default policy must pass Alpha through: %+v", got)
+	}
+	state.Aliases = []policy.Alias{{ID: "a", Name: "friendly", Enabled: true, Mode: "pinned", Target: "gpt-6.1-sol", ExposeOriginal: true}}
+	alias := hooksFor(t, policy.New(state, catalog, true))
+	for _, guard := range []bool{true, false} {
+		alias.Guard = guard
+		got := alias.Route(pluginapi.ModelRouteRequest{RequestedModel: "friendly", SourceFormat: "codex-alpha-search", AvailableProviders: []string{"codex"}})
+		if !got.Handled || got.TargetKind != pluginapi.ModelRouteTargetSelf || got.Reason != "alpha_alias_unsupported" {
+			t.Fatalf("OAuth would forward alias unchanged guard=%v: %+v", guard, got)
+		}
+	}
+	// Hiding alone also requires final authorization even without the whitelist.
+	state.Aliases[0].ExposeOriginal = false
+	hidden := hooksFor(t, policy.New(state, catalog, true))
+	if got := hidden.Route(pluginapi.ModelRouteRequest{RequestedModel: "cpa-native-sol", SourceFormat: "codex-alpha-search"}); !got.Handled {
+		t.Fatal("hidden target may be reached through native alias")
 	}
 }

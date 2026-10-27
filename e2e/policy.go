@@ -427,3 +427,29 @@ func (h *harness) pluginChecks() {
 		return fmt.Sprintf("revision %d and %d history IDs restored; whitelist and alias enforce", after.Revision, len(ids))
 	})
 }
+
+// Exact allow rules cannot prove whether CPA will remap a public model later.
+func (h *harness) alphaSafetyChecks() {
+	h.check("Alpha native mapping and alias safety", func() string {
+		original := h.state()
+		draft := h.state()
+		draft.Rules = append(draft.Rules,
+			rule{ID: "r_alpha_native", Enabled: true, Kind: "exact", Value: "cpa-native-sol"},
+			rule{ID: "r_alpha_raw", Enabled: true, Kind: "exact", Value: "gpt-6.1-sol"},
+			rule{ID: "r_alpha_prefix", Enabled: true, Kind: "exact", Value: "prefix/gpt-6.1-sol"})
+		h.save(draft)
+		before := len(h.upstream.snapshot())
+		for _, model := range []string{"cpa-native-sol", "prefix/gpt-6.1-sol", "gpt-6.1-sol", "gpt-sol"} {
+			for _, path := range []string{"/v1/alpha/search", "/backend-api/codex/alpha/search"} {
+				r := h.http("POST", path, map[string]any{"model": model, "query": "fixture"}, h.clientKey)
+				wantStatus(r, 503)
+				require(bytes.Contains(r.body, []byte("unsupported Codex Alpha Search model route target")) && bytes.Contains(r.body, []byte("cpa-model-dock")), "unsafe Alpha model=%s passed denial route: %s", model, short(r.body))
+			}
+		}
+		require(len(h.upstream.snapshot()) == before, "Alpha safety test called upstream")
+		original.Revision = h.state().Revision
+		h.save(original)
+		h.whitelistPolicy()
+		return "exact native/prefix/raw allows and published Dock alias all denied on both paths; zero upstream calls"
+	})
+}

@@ -216,6 +216,24 @@ func (h *Hooks) Route(req pluginapi.ModelRouteRequest) (out pluginapi.ModelRoute
 	s := h.latest()
 	d := decide(s, req.RequestedModel)
 	alpha := req.SourceFormat == "codex-alpha-search"
+	if alpha && d.Alias != nil {
+		// Alpha's router target changes credential selection only. OAuth
+		// forwards the original body model, and API-key credentials apply a
+		// further private mapping without AfterAuth (server_routes.go:464-478).
+		// No callback exposes either mapping's provenance. Never claim that
+		// a Dock alias can be honored on this raw-HTTP path.
+		out = sentinel()
+		out.Reason = "alpha_alias_unsupported"
+		return out
+	}
+	if alpha && h.Guard && alphaRestricted(s) {
+		// Even an exact whitelisted registry ID may be a CPA-native alias.
+		// auth.models does not distinguish raw IDs from mapped public IDs;
+		// there is no final resolved-model authorization hook on Alpha.
+		out = sentinel()
+		out.Reason = "alpha_destination_unverifiable"
+		return out
+	}
 	if !d.Allowed {
 		if alpha && h.Guard {
 			return sentinel()
@@ -254,6 +272,22 @@ func (h *Hooks) Route(req pluginapi.ModelRouteRequest) (out pluginapi.ModelRoute
 		return out
 	}
 	return pluginapi.ModelRouteResponse{Handled: true, TargetKind: pluginapi.ModelRouteTargetProvider, Target: provider, TargetModel: d.ResolvedTarget + thinkingSuffix(req.RequestedModel), Reason: "alias"}
+}
+
+func alphaRestricted(s *policy.Snapshot) bool {
+	if !s.Available() {
+		return true
+	}
+	state := s.StateCopy()
+	if state.Settings.WhitelistEnabled {
+		return true
+	}
+	for _, alias := range state.Aliases {
+		if alias.Enabled && !alias.ExposeOriginal {
+			return true
+		}
+	}
+	return false
 }
 
 func containsFold(values []string, value string) bool {
@@ -388,6 +422,12 @@ func (h *Hooks) Frontend(req pluginapi.FrontendAuthRequest) (out pluginapi.Front
 		d := decide(s, payload.Model)
 		if !d.Allowed {
 			return pluginapi.FrontendAuthResponse{DenyStatusCode: denialStatus(d), DenyMessage: safeMessage(d)}
+		}
+		if d.Alias != nil {
+			return pluginapi.FrontendAuthResponse{DenyStatusCode: 503, DenyMessage: "Aliases are unavailable on Alpha Search"}
+		}
+		if alphaRestricted(s) {
+			return pluginapi.FrontendAuthResponse{DenyStatusCode: 403, DenyMessage: "Alpha Search destination cannot be verified while model policy is enabled"}
 		}
 	}
 	// No success identity: this is a nonexclusive guard, never an authenticator.

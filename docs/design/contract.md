@@ -308,13 +308,23 @@ filenames are served; GET and HEAD are supported. No management data is public.
 
 ## 6. Guard / uncovered endpoints
 
-- Codex Alpha Search: ModelRouter receives `SourceFormat="codex-alpha-search"`. Denied names
-  route to this plugin's static **denial executor** (`TargetKind="self"`), which declares only the
-  `codex-alpha-search` input/output format and always denies execution. CPA validates executor
-  readiness, then Alpha Search rejects this non-provider route with 503. A fabricated non-Codex
-  provider sentinel is unsafe: CPA discards routes to providers without registered credentials.
-  Allowed aliases route to the registered `codex` provider; unavailable or incompatible targets
-  receive the denial route when the guard is enabled.
+- Codex Alpha Search: ModelRouter receives `SourceFormat="codex-alpha-search"`.
+  With the guard enabled, Alpha is denied whenever whitelist rules or alias target hiding
+  require final-model authorization. CPA's `auth.models` exposes public IDs without their
+  credential mapping provenance, so even an exact whitelisted ID cannot be verified as a raw
+  upstream destination. CPAModelDock aliases are always denied on Alpha, including when the
+  guard is off: the router changes credential selection only; OAuth sends the original body
+  model unchanged, while API-key credentials resolve private mappings after selection without
+  AfterAuth (`internal/api/server_routes.go:251-291`, `:464-478`). No plugin callback can safely
+  rewrite/authorize that final body. An unrestricted default policy passes native Alpha through.
+  Denials route to this plugin's static **denial executor** (`TargetKind="self"`); Alpha rejects
+  this unsupported non-provider route with HTTP 503 naming `cpa-model-dock`, before transport.
+  The route reason distinguishes `alpha_alias_unsupported`/`alpha_destination_unverifiable`
+  internally; CPA's Alpha error DTO does not expose that reason. Ordinary unavailable aliases
+  also use this executor route to reach BeforeAuth (otherwise CPA's earlier provider lookup
+  would return generic 400); they return 503 `alias_target_unavailable`. The executor declares
+  Alpha and the ordinary OpenAI/Responses/Claude/Gemini formats and never forwards a request.
+  Both Alpha paths, exact native/prefix/raw rules, and Dock aliases are exercised on real CPA.
 - `/v1/realtime*`, `/v1/live*`: no model hooks. With the guard and whitelist enabled, the
   nonexclusive FrontendAuthProvider denies these endpoints when invoked and returns NotHandled
   elsewhere. **This is not an effective mandatory gate on stock CPA startup with configured API
@@ -322,8 +332,9 @@ filenames are served; GET and HEAD are supported. No management data is public.
   `sdk/access/registry.go` preserves registration order; `sdk/access/manager.go` returns on the
   first successful authentication. Valid built-in keys can therefore bypass the guard. Realtime
   client-secret authentication also bypasses fallback providers (`internal/api/server_middleware.go`).
-  Runtime integration remains to be tested; deployments requiring enforcement must block these
-  paths in a reverse proxy. The plugin never claims exclusive auth or authenticates requests.
+  Real-CPA tests with valid built-in keys observe no guard denial (503 auth_not_found both
+  before and after enabling whitelist; no Codex credentials in the fixture). Deployments
+  requiring enforcement must block these paths in a reverse proxy. The plugin never claims exclusive auth or authenticates requests.
 - Responses WebSocket in-flight continuation frames do not rerun ModelRouter/BeforeAuth/AfterAuth.
   Verified in `internal/runtime/executor/codex_websockets_duplex.go`: create/append reads explicit
   `model` and, when it differs from both `req.Model` and the bound requested model, returns
@@ -334,7 +345,8 @@ filenames are served; GET and HEAD are supported. No management data is public.
   New normal executable turns use the standard hook pipeline. Strict deployments should disable
   Responses WS (`GET /v1/responses` and `/backend-api/codex/responses`) at a reverse proxy.
 - Gemini `GET /v1beta/models/{id}` detail and management `api-call` do not invoke these hooks.
-  Reverse-proxy restrictions are required to cover them; list filtering alone is not an access gate.
+  Real CPA returns HTTP 200 with the hidden model name on Gemini detail GET. Reverse-proxy
+  restrictions are required to cover these paths; list filtering alone is not an access gate.
 - Request hooks recover panics into successful `Terminate` decisions with protocol-shaped errors.
   ModelRouter has no denial fields; Alpha uses the denial route above. Response and stream DTOs
   have **no `Terminate` or status fields**: recovery returns a sanitized protocol error body/empty
