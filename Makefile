@@ -6,7 +6,7 @@ GOCACHE := /tmp/cpa-model-dock-go-cache
 endif
 VERSION ?= 0.1.0
 PLATFORMS ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
-BASE_URL ?= https://example.invalid/cpa-model-dock/$(VERSION)
+BASE_URL ?= https://github.com/suk-6/cpa-model-dock/releases/download/v$(VERSION)
 PACKAGE_ONLY ?= 0
 export GO GOTOOLCHAIN GOCACHE VERSION
 

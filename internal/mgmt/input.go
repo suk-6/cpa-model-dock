@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/cpa-model-dock/cpa-model-dock/internal/policy"
+	"github.com/suk-6/cpa-model-dock/internal/policy"
 )
 
 type object map[string]json.RawMessage

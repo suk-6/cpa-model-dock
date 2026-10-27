@@ -37,7 +37,7 @@ If applying for the official schema-1 GitHub release catalog later, supply a rea
 `repository: https://github.com/<owner>/<repo>` plus `id`, `name`, `description`,
 and `author`. Publish ZIPs named
 `cpa-model-dock_<version>_<goos>_<goarch>.zip` and `checksums.txt` on that repo's
-release. The module owner currently in the code is a placeholder. Schema 1 does
+release (this project: `https://github.com/suk-6/cpa-model-dock`). Schema 1 does
 not support direct artifact URLs; use the generated schema 2 for self hosting.
 
 Verified against CPA v8.0.44

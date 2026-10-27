@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cpa-model-dock/cpa-model-dock/internal/policy"
+	"github.com/suk-6/cpa-model-dock/internal/policy"
 )
 
 func fixture(current string, names ...string) (*policy.Snapshot, policy.State, policy.Catalog) {

@@ -11,7 +11,7 @@ to 6 when host advertises 6).
 ## 1. Packaging
 
 - Plugin ID: `cpa-model-dock`. Library file: `cpa-model-dock.{so,dylib,dll}` (Go `-buildmode=c-shared`, cgo).
-- Go module path: `github.com/cpa-model-dock/cpa-model-dock` (placeholder owner; documented as such).
+- Go module path: `github.com/suk-6/cpa-model-dock` .
 - Display name (Metadata.Name): `CPAModelDock`.
 - Host config block (`config.yaml`):
 

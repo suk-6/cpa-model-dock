@@ -19,8 +19,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cpa-model-dock/cpa-model-dock/internal/hostabi"
-	"github.com/cpa-model-dock/cpa-model-dock/internal/policy"
+	"github.com/suk-6/cpa-model-dock/internal/hostabi"
+	"github.com/suk-6/cpa-model-dock/internal/policy"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 )
 

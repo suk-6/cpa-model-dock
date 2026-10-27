@@ -1,4 +1,4 @@
-module github.com/cpa-model-dock/cpa-model-dock
+module github.com/suk-6/cpa-model-dock
 
 go 1.26.10
 

@@ -4,7 +4,7 @@
 
 CPAModelDock is a native [CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI/tree/v8.0.44) plugin for stable model aliases, model allow lists, and conservative automatic upgrades within a model family. Clients can request `gpt-sol` while an operator pins its target to `gpt-6.1-sol` or lets it advance to a strictly newer routable Sol model. Model Dock provides an English/Korean management UI, catalog and policy previews, decision explanations, and persisted change history.
 
-The plugin ID is `cpa-model-dock`; its display name is `CPAModelDock`. The module namespace `github.com/cpa-model-dock/cpa-model-dock` is a **placeholder owner**, not a claim that a release repository or official store listing exists. Model names in the examples are illustrative fixtures, not provider availability announcements.
+The plugin ID is `cpa-model-dock`; its display name is `CPAModelDock`. Source and release binaries: <https://github.com/suk-6/cpa-model-dock> (Go module `github.com/suk-6/cpa-model-dock`). It is not listed in the official plugin store. Model names in the examples are illustrative fixtures, not provider availability announcements.
 
 ## Compatibility and verification
 

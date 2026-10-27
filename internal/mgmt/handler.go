@@ -9,9 +9,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/cpa-model-dock/cpa-model-dock/internal/policy"
-	"github.com/cpa-model-dock/cpa-model-dock/internal/store"
-	"github.com/cpa-model-dock/cpa-model-dock/web"
+	"github.com/suk-6/cpa-model-dock/internal/policy"
+	"github.com/suk-6/cpa-model-dock/internal/store"
+	"github.com/suk-6/cpa-model-dock/web"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 

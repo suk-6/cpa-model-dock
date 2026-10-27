@@ -6,7 +6,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/cpa-model-dock/cpa-model-dock/internal/hostabi"
+	"github.com/suk-6/cpa-model-dock/internal/hostabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
@@ -194,7 +194,7 @@ func (r *runtime) register(raw []byte) (any, error) {
 	}}, nil
 }
 func metadata() pluginapi.Metadata {
-	return pluginapi.Metadata{Name: "CPAModelDock", Version: pluginVersion, Author: "CPAModelDock contributors", GitHubRepository: "https://github.com/cpa-model-dock/cpa-model-dock", ConfigFields: []pluginapi.ConfigField{
+	return pluginapi.Metadata{Name: "CPAModelDock", Version: pluginVersion, Author: "CPAModelDock contributors", GitHubRepository: "https://github.com/suk-6/cpa-model-dock", ConfigFields: []pluginapi.ConfigField{
 		{Name: "state-dir", Type: pluginapi.ConfigFieldTypeString, Default: "", Description: "Absolute directory for plugin state and history; defaults to $HOME/.cli-proxy-api/cpa-model-dock"},
 		{Name: "catalog-refresh-interval", Type: pluginapi.ConfigFieldTypeString, Default: "5m", Description: "Catalog refresh interval, minimum 30s"},
 		{Name: "guard-uncovered-endpoints", Type: pluginapi.ConfigFieldTypeBoolean, Default: true, Description: "Guard Alpha Search and realtime/live where CPA invokes the plugin"},

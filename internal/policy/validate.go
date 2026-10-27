@@ -5,7 +5,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/cpa-model-dock/cpa-model-dock/internal/version"
+	"github.com/suk-6/cpa-model-dock/internal/version"
 )
 
 // Validate checks domain structure, name collisions, templates, and references.

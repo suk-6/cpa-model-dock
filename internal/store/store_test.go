@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/cpa-model-dock/cpa-model-dock/internal/policy"
+	"github.com/suk-6/cpa-model-dock/internal/policy"
 )
 
 func openStore(t *testing.T, dir string) *Store {

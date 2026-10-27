@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cpa-model-dock/cpa-model-dock/internal/hooks"
-	"github.com/cpa-model-dock/cpa-model-dock/internal/policy"
-	"github.com/cpa-model-dock/cpa-model-dock/internal/store"
+	"github.com/suk-6/cpa-model-dock/internal/hooks"
+	"github.com/suk-6/cpa-model-dock/internal/policy"
+	"github.com/suk-6/cpa-model-dock/internal/store"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 

@@ -21,7 +21,7 @@ No dependency sources under `node_modules` are accessed.
 
 | Variable | Default / behavior |
 | --- | --- |
-| `CPA_SOURCE` | `/Users/woosuk/git-files/cpa-model-dock/.ref/CLIProxyAPI` |
+| `CPA_SOURCE` | `<repo>/.ref/CLIProxyAPI` (a CLIProxyAPI v8.0.44 checkout; clone it there or set this variable) |
 | `CPA_BIN` | Build CPA from `CPA_SOURCE`; set to an executable to skip that build |
 | `CPA_MODEL_DOCK_LIB` | `../dist/cpa-model-dock.dylib`, resolved **relative to the repository root**, as requested; use an explicit path for a repo-local `dist/` or Linux `.so` |
 | `E2E_NO_PLUGIN` | `1` skips plugin loading and reports every plugin scenario as SKIP |

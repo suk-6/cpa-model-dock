@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cpa-model-dock/cpa-model-dock/internal/policy"
-	"github.com/cpa-model-dock/cpa-model-dock/internal/version"
+	"github.com/suk-6/cpa-model-dock/internal/policy"
+	"github.com/suk-6/cpa-model-dock/internal/version"
 )
 
 // Probe is an optional paid health check. Errors and panics preserve the old

@@ -4,7 +4,7 @@
 
 CPAModelDock은 [CLIProxyAPI(CPA)](https://github.com/router-for-me/CLIProxyAPI/tree/v8.0.44)의 네이티브 플러그인입니다. 고정된 모델 별칭, 모델 허용 목록, 같은 모델 계열 안에서의 보수적인 자동 업그레이드를 제공합니다. 클라이언트는 `gpt-sol`을 요청하고 운영자는 대상을 `gpt-6.1-sol`로 고정하거나, 실제 라우팅 가능한 더 높은 Sol 버전으로 자동 변경할 수 있습니다. Model Dock에는 영어/한국어 관리 UI, 모델 목록과 정책 미리보기, 판정 설명, 영속 변경 이력이 포함됩니다.
 
-플러그인 ID는 `cpa-model-dock`, 표시 이름은 `CPAModelDock`입니다. 모듈 경로 `github.com/cpa-model-dock/cpa-model-dock`의 소유자는 **임시 이름**입니다. 실제 공개 릴리스 저장소나 공식 스토어 등록을 뜻하지 않습니다. 예제 모델 이름은 설명용 테스트 데이터이며 제공자의 실제 출시·이용 가능 여부를 나타내지 않습니다.
+플러그인 ID는 `cpa-model-dock`, 표시 이름은 `CPAModelDock`입니다. 소스와 릴리스 바이너리: <https://github.com/suk-6/cpa-model-dock> (Go 모듈 `github.com/suk-6/cpa-model-dock`). 공식 플러그인 스토어에는 등록되어 있지 않습니다. 예제 모델 이름은 설명용 테스트 데이터이며 제공자의 실제 출시·이용 가능 여부를 나타내지 않습니다.
 
 ## 호환성과 검증 범위
 

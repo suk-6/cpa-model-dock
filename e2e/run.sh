@@ -10,7 +10,7 @@ export GOWORK=off
 # Keep Go build-cache writes inside a sandbox-writable location.
 export GOCACHE="${GOCACHE:-${TMPDIR:-/tmp}/cpa-model-dock-go-build}"
 export CPA_MODEL_DOCK_LIB="${CPA_MODEL_DOCK_LIB:-$REPO_ROOT/../dist/cpa-model-dock.dylib}"
-export CPA_SOURCE="${CPA_SOURCE:-/Users/woosuk/git-files/cpa-model-dock/.ref/CLIProxyAPI}"
+export CPA_SOURCE="${CPA_SOURCE:-$REPO_ROOT/.ref/CLIProxyAPI}"
 export E2E_WORK_DIR
 E2E_WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cpa-model-dock-e2e.XXXXXX")"
 runner_pid=""

@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/cpa-model-dock/cpa-model-dock/internal/version"
+	"github.com/suk-6/cpa-model-dock/internal/version"
 )
 
 func DefaultState() State {
