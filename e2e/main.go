@@ -104,6 +104,7 @@ func run() (exitCode int) {
 		return 0
 	}
 	h.pluginChecks()
+	h.uiChecks()
 	return 0
 }
 func must(err error) {
@@ -513,6 +514,13 @@ func (h *harness) baseline() {
 			}
 			h.assertCall(before, "gpt-6.1-sol", false)
 			h.routable[path] = true
+			if path == "/v1/messages" {
+				before = len(h.upstream.snapshot())
+				r = h.infer(path, "claude-fable-5-dd-los-1.6-tpg", false)
+				wantStatus(r, 200)
+				h.assertCall(before, "gpt-6.1-sol", false)
+				h.routable[path+" cloak"] = true
+			}
 			return "translated protocol reaches OpenAI-compatible upstream"
 		})
 	}

@@ -46,7 +46,7 @@ type policy struct {
 }
 
 var pluginScenarios = []string{
-	"plugin registration and resources", "pinned alias and response model rewrite", "alias-only whitelist listing", "blocked direct/prefix/native/thinking/other models", "blocked Claude notation", "blocked Gemini notation", "frontend-auth realtime/live guard observation", "Gemini hidden detail observation", "auto-update numeric version selection", "removed target keeps mapping", "stale revision rejected", "invalid state preserves policy", "restart restores state and history",
+	"plugin registration and resources", "pinned alias and response model rewrite", "alias-only whitelist listing", "blocked direct/prefix/native/thinking/other models", "blocked Claude notation", "blocked Gemini notation", "frontend-auth realtime/live guard observation", "Gemini hidden detail observation", "auto-update numeric version selection", "removed target keeps mapping", "stale revision rejected", "invalid state preserves policy", "restart restores state and history", "Alpha Search denial",
 }
 
 func (h *harness) state() policy {
@@ -100,9 +100,38 @@ func (h *harness) denied(path, model string) string {
 	// A generic host 404/unknown-provider error must not masquerade as a plugin denial.
 	var v map[string]any
 	must(json.Unmarshal(r.body, &v))
-	require(policyDenial(r), "denial lacks contract policy code: HTTP %d %s", r.status, short(r.body))
+	require(protocolPolicyDenial(path, r), "denial lacks contract protocol error: HTTP %d %s", r.status, short(r.body))
 	return fmt.Sprintf("%s HTTP %d; zero upstream calls", model, r.status)
 }
+
+// Claude and Gemini intentionally use native protocol error shapes without an
+// OpenAI string code. Baseline routing plus zero recorder calls distinguishes
+// these plugin denials from unsupported-protocol failures.
+func protocolPolicyDenial(path string, r response) bool {
+	if policyDenial(r) {
+		return true
+	}
+	var v struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type    string `json:"type"`
+			Code    int    `json:"code"`
+			Status  string `json:"status"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(r.body, &v) != nil {
+		return false
+	}
+	if path == "/v1/messages" {
+		return v.Type == "error" && ((r.status == 404 && v.Error.Type == "not_found_error" && v.Error.Message == "Model not found") || (r.status == 403 && v.Error.Type == "permission_error" && v.Error.Message == "Model is not allowed"))
+	}
+	if path == "/gemini" {
+		return v.Error.Code == r.status && ((r.status == 404 && v.Error.Status == "NOT_FOUND" && v.Error.Message == "Model not found") || (r.status == 403 && v.Error.Status == "PERMISSION_DENIED" && v.Error.Message == "Model is not allowed"))
+	}
+	return false
+}
+
 func policyDenial(r response) bool {
 	for _, s := range []string{"model_not_allowed", "model_not_found", "hidden_by_alias", "not_whitelisted", "alias_not_published"} {
 		if bytes.Contains(r.body, []byte(s)) {
@@ -225,9 +254,26 @@ func (h *harness) pluginChecks() {
 			if !h.routable[p] {
 				panic(skipped("baseline CPA cannot route this protocol to configured OpenAI-compatible credential"))
 			}
-			return h.denied(p, "gpt-6.1-sol")
+			detail := h.denied(p, "gpt-6.1-sol")
+			if p == "/v1/messages" {
+				require(h.routable[p+" cloak"], "cloaked Claude baseline not established")
+				detail += "; " + h.denied(p, "claude-fable-5-dd-los-1.6-tpg")
+			}
+			return detail
 		})
 	}
+	h.check(pluginScenarios[13], func() string {
+		before := len(h.upstream.snapshot())
+		details := []string{}
+		for _, path := range []string{"/v1/alpha/search", "/backend-api/codex/alpha/search"} {
+			r := h.http("POST", path, map[string]any{"model": "gpt-6.1-sol", "query": "fixture"}, h.clientKey)
+			wantStatus(r, 503)
+			require(bytes.Contains(r.body, []byte("unsupported Codex Alpha Search model route target")) && bytes.Contains(r.body, []byte("cpa-model-dock")), "Alpha did not reject the plugin denial executor: %s", short(r.body))
+			details = append(details, path+" HTTP 503 denial executor")
+		}
+		require(len(h.upstream.snapshot()) == before, "Alpha denial called upstream")
+		return strings.Join(details, "; ") + "; zero upstream calls"
+	})
 	h.check(pluginScenarios[6], func() string {
 		results := []string{}
 		before := len(h.upstream.snapshot())
