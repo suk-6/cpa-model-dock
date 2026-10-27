@@ -134,7 +134,8 @@ and protocol notations.
 Exact rules never widen automatically; family rules include new versions matching the template
 (respecting include_prerelease=false by default for family rules too).
 
-Listing: an entry is shown iff `decide(entry_id)` is ALLOW and the model is routable; published
+Listing: an entry CPA itself supplies is shown iff `decide(entry_id)` is ALLOW, even when the
+callback catalog is empty, unknown, stale, or omits that entry; published
 aliases are added as entries cloned from their target's entry (id replaced), only if target routable.
 
 Errors (OpenAI-style JSON, Claude/Gemini shapes where the protocol requires):
@@ -147,7 +148,17 @@ Background poller (default 5 min, plus on demand) using host callbacks `host.aut
 `host.auth.list`/`get_runtime`. Snapshot: models → {providers[], credential_count, routable bool}. For routable entries, providers
 contains only enabled runtime advertisers; catalog-only entries retain their registered providers.
 Never queried per request. On failure keep last good snapshot, record a sanitized error + attempt
-timestamp. Missing, disabled, or unavailable runtime credentials are not counted as routable.
+timestamp. Disabled or unavailable runtime credentials are not counted as routable. Missing
+runtime credentials remain unconfirmed, with one source-verified CPA v8.0.44 exception:
+config-synthesized OpenAI-compatible clients have IDs `openai-compatibility:<name>:<12 hex>`
+and matching provider `openai-compatible-<name>`, and are omitted by `auth.list/get_runtime`
+because they have neither a file path nor `runtime_only`. Their positive per-client model
+registrations in `auth.models` count as cached routability evidence; explicit disabled/unavailable
+runtime evidence still wins. Removed/disabled config clients lose registrations during CPA
+reconciliation. No callback snapshot guarantees request-time health or eligibility. Sources:
+`internal/watcher/synthesizer/config.go:synthesizeOpenAICompat`,
+`internal/pluginhost/auth_callbacks.go:buildHostAuthFileEntry/buildHostAuthModels`,
+`sdk/cliproxy/service_auth.go:applyAuthUpdate` in the CPA checkout.
 This is a conservative registration inventory, not a promise of current scheduler eligibility: it
 excludes static executor-only registry clients and cannot inspect per-model cooldowns atomically.
 Credential details exposed to the UI are limited to provider, label/id hash, status — never tokens,
@@ -155,31 +166,145 @@ keys, emails beyond what CPA's own UI shows (prefer omitting).
 
 ## 5. Management API (authenticated by CPA management key; exact paths, no path params)
 
-Base: `/v0/management/plugins/cpa-model-dock`. All JSON. All mutating calls (including catalog refresh and an applying alias check) require
-`"revision": <n>` in body (or `If-Match: "<n>"`) and return `409 {"error":{"code":"revision_conflict"}}`
-with the current state on mismatch. Validation failures: `422 {"error":{"code":"validation_failed",
-"details":[{"path":"aliases[0].name","code":"alias_conflict","message":"..."}]}}` and nothing is saved.
+Base: `/v0/management/plugins/cpa-model-dock`. CPA authenticates every management
+route with its management key, including previews. Requests and responses are JSON.
+The shapes below are the wire contract; internal policy/evaluator structs are not
+response DTOs. All arrays are arrays, including when empty; object maps are `{}`
+when empty. Timestamps are ISO 8601 UTC. Human-readable messages are safe display
+text, not stable identifiers; clients branch on `code`.
 
-| Method | Path | Body | Returns |
+| Method | Path | Body/query | Returns (HTTP 200 unless specified below) |
 |---|---|---|---|
-| GET | `/overview` | – | plugin version, host schema, policy_enabled, whitelist_enabled, counts (public models, public aliases), active mappings, recent auto updates (5), catalog status {last_refresh_at, ok, error}, guard status, warnings[] (e.g. priority not highest, uncovered endpoints) |
-| GET | `/state` | – | `{revision, settings, families, builtin_families, aliases, rules, alias_status:{id:...}}` |
-| PUT | `/state` | full `{revision, settings, families, aliases, rules}` | saved state (new revision) |
-| POST | `/validate` | same as PUT body | `{valid, details[], preview:{public_models[], public_aliases[]}}` (no save) |
-| GET | `/catalog` | – | `{refreshed_at, ok, error, models:[{id, providers[], routable, public, reason}]}` |
-| POST | `/catalog/refresh` | `{revision}` | catalog |
-| POST | `/aliases/check` | `{revision?, alias_id?, dry_run?:bool}` (revision required unless dry_run) | per-alias evaluation results (candidates with version, routable, chosen, reason) ; applies change unless dry_run |
-| POST | `/rules/preview` | `{rules?, settings?, aliases?}` (draft; defaults to saved) | `{rules:[{id, matches[]}], public_models[], public_aliases[]}` |
-| POST | `/explain` | `{model, draft?}` | `{allowed, status, code, reason, steps[], resolved_target?}` |
-| GET | `/history` | query `limit` (default 100), `before` | `{entries:[{id, at, actor:"user"|"auto", kind:"state"|"alias_target", summary, before, after}]}` |
-| POST | `/history/restore` | `{entry_id, revision, scope:"state"|"alias_target"}` | saved state |
+| GET | `/overview` | – | `{plugin_version,host_schema,policy_enabled,whitelist_enabled,counts:{public_models,public_aliases},active_mappings:[{alias,target}],recent_auto_updates:HistoryEntry[],catalog:{last_refresh_at,ok,error},guard:{enabled,verified,limitations:string[]},warnings:string[]}` |
+| GET | `/state` | – | `StateView` |
+| PUT | `/state` | full `{revision?,settings,families,aliases,rules}` | `StateView` with new revision |
+| POST | `/validate` | full PUT-shaped draft; revision ignored | `{valid,details:Detail[],preview:{public_models:string[],public_aliases:string[]}}` |
+| GET | `/catalog` | – | `{refreshed_at,ok,error,models:[{id,providers:string[],credential_count,routable,public,reason:Reason}]}` |
+| POST | `/catalog/refresh` | `{}`; supplied revision ignored | same catalog shape, without revision |
+| POST | `/aliases/check` | `{revision?,alias_id?:string,dry_run?:bool}` | `{results:AliasCheckResult[],revision}` |
+| POST | `/rules/preview` | `{settings?,families?,aliases?,rules?}` | `{rules:[{id,matches:string[]}],public_models:string[],public_aliases:string[]}` |
+| POST | `/explain` | `{model:string,draft?:{settings?,families?,aliases?,rules?}}` | `{allowed,status,code,reason:string,steps:Reason[],resolved_target?:string}` |
+| GET | `/history` | query `limit` (default 100, integer 1–1000), `before` (exclusive entry ID) | `{entries:HistoryEntry[],next_before:string|null}` |
+| POST | `/history/restore` | `{entry_id:string,revision?,scope:"state"|"alias_target"}` | `StateView` with new revision |
 
-Read-only POSTs `/validate`, `/rules/preview`, `/explain` and dry-run alias checks do not require
-a revision. History restore reapplies the selected entry's `after` state as a new revision;
-`alias_target` scope reapplies only targets changed in that entry and does not resurrect removed aliases.
+`Reason` is exactly `{code:string,message:string}`. `Detail` is exactly
+`{path:string,code:string,message:string}`; paths identify editable fields, e.g.
+`aliases[0].name`, `aliases[0].auto.family`, `families[0].template`, `rules[0].value`.
 
-Resources (public, static only): `/v0/resource/plugins/cpa-model-dock/index.html` (Menu
-`Model Dock`), `/app.js`, `/app.css`, `/i18n.js`. No data in resources.
+`StateView` contains exactly `{schema,revision,updated_at,settings,families,
+builtin_families,aliases,rules,alias_status}`. The editable policy follows §2;
+`builtin_families` is a read-only array. `alias_status` is keyed by current alias
+ID. Each value contains exactly `{current_target,candidates,last_checked_at,
+last_result,reason:Reason,target_routable}`. A never-checked alias has
+`last_checked_at:null`, `last_result:"kept"`, `reason.code:"not_checked"`, and
+empty candidates. Saves/restores return the same complete shape as GET.
+
+`AliasCheckResult` contains exactly `{alias_id,current_target,candidates,
+last_checked_at,last_result,reason:Reason}`. Candidates contain exactly
+`{id,version,routable,chosen,reason:Reason}`. `version` preserves parsed dots and
+dashes. Whole-family candidates include catalog-only models with `routable:false`;
+excluded prereleases are omitted. Selection uses `reason.code:"selected"`;
+result codes include `newer_version`, `up_to_date`, `ambiguous`,
+`current_unparseable`, `no_routable_candidates`, `catalog_unavailable`, `pinned`,
+and `disabled`. Omitting `alias_id` (or supplying an empty string) checks all
+aliases, including disabled/pinned aliases, which are kept with explicit reasons.
+Unknown IDs return 404 `alias_not_found`. Applying checks cache each result
+without `alias_id`, adding `target_routable` in state. A dry-run reports the
+**proposed** `current_target`; `updated` means **would update**. Dry-run never
+persists targets, check timestamps, runtime status, or history. Paid probes cannot
+run in a dry-run; an unverified probe keeps the target (`health_check_unverified`).
+The development mock cannot perform paid probes even during applying checks.
+
+Overview counts separate public real models and aliases. `active_mappings`
+contains all enabled configured aliases, including unpublished or currently
+unavailable targets, and is not routing verification. `recent_auto_updates`
+contains up to five complete newest `actor:"auto",kind:"alias_target"` history
+entries. Catalog errors are `null` on success or a safe string on failure.
+Guard `verified` remains false; `limitations` and `warnings` are arrays of strings.
+Catalog visibility uses the policy decision and routability; catalog-only models
+have `public:false` and `reason.code:"not_routable"`.
+
+Preview/explain merge partial draft settings over saved settings and replace each
+supplied array. Custom `families` are accepted. Omitted draft fields use saved
+values. An explicit valid draft can preview recovery from unavailable policy;
+explain without a draft uses saved policy availability. All public/match arrays
+contain **ID strings**, sorted lexically. Individual rule matches include hidden
+and catalog-only models even when final public arrays exclude them; alias rules
+match configured alias names. Disabled rules have empty match arrays. Explain's
+`status` simulates inference (200/403/404/503); the management response remains
+HTTP 200. Its `code` describes the policy decision (`hidden_by_alias`,
+`alias_not_published`, `not_whitelisted`, `rule:<id>`, etc.), distinct from an
+inference adapter's protocol error envelope. `steps` is an array of `Reason`
+objects, not strings; `resolved_target` is present only when resolved.
+
+Only PUT state, **applying** alias checks, and history restore require the current
+integer body `revision` or `If-Match: "<revision>"`. If both are supplied, both
+must match the current revision. Missing, malformed, disagreeing, or stale tokens
+return HTTP **409** `{error:{code:"revision_conflict",message},state:StateView}`.
+An applying check advances policy revision exactly once **only if at least one
+target changes**; unchanged checks may update runtime status but do not change
+policy timestamps or history. State saves (including no-op saves) and successful
+restores advance revision once. Checks of several aliases share one policy
+revision, with a separate target history entry per changed alias.
+
+Catalog refresh, validate, preview, explain, and dry-run require no revision and
+ignore supplied body/header tokens. **Refresh never changes policy revision,
+policy timestamp, alias targets/runtime status, or history**, even on failure.
+A failed refresh returns HTTP 200 `ok:false`, keeps last-good models, and updates
+catalog attempt status. Concurrent publication preserves the latest policy;
+catalog refreshes cannot overwrite a concurrent state save. Scheduled automatic
+alias checks are independent policy mutations and use the applying-check rules.
+
+Malformed/non-object JSON returns 400 `invalid_json`; an empty body is `{}`.
+Bodies over 1 MiB return 413 `body_too_large`. Invalid saves, previews, explains,
+and restores return HTTP **422** `{error:{code:"validation_failed",message,
+details:Detail[]}}`, without saving. `/validate` instead returns HTTP **200**
+`valid:false` with details and empty preview arrays. Unknown routes return 404
+`not_found`; unsupported methods on known paths return 405 `method_not_allowed`
+with `Allow`. Missing history entries return 404 `entry_not_found`. Missing
+management dependencies return 503 `policy_unavailable`; operation failures
+return sanitized 500 errors.
+
+Save projection discards runtime fields, per-alias `status`, unknown fields,
+and client schema/timestamps. The server supplies schema/revision/timestamp and
+built-ins. Stable supplied IDs are accepted and must be unique across the policy;
+omitted family/alias/rule IDs are generated as `fam_<UUID>`, `al_<UUID>`,
+`r_<UUID>`. Read-only draft IDs are temporary. Clients creating a family and its
+references together should supply that family's stable ID. Built-in IDs are
+reserved for custom families. Full settings require both booleans and an integer refresh interval
+of 0 (host default) or >=30. Alias/rule `enabled` defaults true,
+`expose_original` false, rewrite override null, provider empty, auto flags false,
+and family `allow_dated` true. Alias names cannot contain whitespace, slash,
+wildcards, or thinking suffixes and cannot collide case-insensitively with a
+catalog ID or another alias. Missing family/alias rule references are invalid,
+even when disabled. Unknown/unroutable targets may be saved so offline aliases
+remain repairable; requests through them fail 503 without fallback.
+
+History is newest first, capped at 1000 exposed entries. `before` is an exclusive
+**entry ID**, not a timestamp or revision; clients treat IDs as opaque strings.
+`next_before` is the last returned ID when more entries remain, otherwise null.
+Unknown cursors, duplicate cursor/limit parameters, and invalid limits return
+400 `invalid_cursor`/`invalid_limit`. `HistoryEntry` is exactly
+`{id,at,actor,kind,summary,before,after}`. State saves use
+`actor:"user",kind:"state"`; target switches use
+`actor:"auto",kind:"alias_target"`. State before/after values are policy
+snapshots with schema/revision/timestamp but no runtime fields; alias-target
+values are exactly `{alias_id,target}`. Unchanged checks and refreshes add no
+history. Disk history may retain full policy snapshots internally; management
+projects target entries into these per-alias pairs.
+
+Restore **undoes to the selected entry's `before` value**, never its `after`.
+Scope must match the entry kind. State scope restores the full policy;
+alias-target scope restores only that alias's target in the current policy.
+An absent alias is a 422 `validation_failed` with detail code `alias_not_found`.
+Restore validates before writing, advances from the current revision, and
+appends a new user entry of the restored scope without rolling revision back or
+deleting history. State saves/restores clear all alias runtime status;
+alias-target restore clears only the restored alias's status.
+
+Resources (public, static only): `/v0/resource/plugins/cpa-model-dock/index.html`
+(Menu `Model Dock`), `/app.js`, `/app.css`, `/i18n.js`. Only these four exact
+filenames are served; GET and HEAD are supported. No management data is public.
 
 ## 6. Guard / uncovered endpoints
 

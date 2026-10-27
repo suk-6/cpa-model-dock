@@ -297,7 +297,7 @@ function startApp() {
     try { await action(); }
     catch (error) {
       if (error.status === 409 && state.draft) {
-        let server = error.data?.state || error.data?.current_state || error.data?.current;
+        let server = error.data?.state;
         if (!server?.settings) {
           try { server = await api('/state'); } catch { server = null; }
         }
@@ -341,7 +341,7 @@ function startApp() {
     if (more && state.history.length) query.set('before',state.history.at(-1).id);
     const data = await api(`/history?${query}`);
     state.history = more ? [...state.history,...arr(data.entries)] : arr(data.entries);
-    state.more = Object.hasOwn(data,'next_before') ? !!data.next_before : arr(data.entries).length === 30;
+    state.more = data.next_before !== null;
     render();
   }
   async function save() {
@@ -367,8 +367,8 @@ function startApp() {
     if (!requireSaved()) return;
     const alias = state.draft.aliases[index];
     if (!alias.id) {state.notice = t('newAliasCheck'); renderNotice(); return;}
-    const result = await api('/aliases/check','POST',{alias_id:alias.id,dry_run:true,revision:state.saved.revision});
-    openModal({type:'check',title:'checkPreview',results:result.results || (Array.isArray(result) ? result : []),aliasId:alias.id});
+    const result = await api('/aliases/check','POST',{alias_id:alias.id,dry_run:true});
+    openModal({type:'check',title:'checkPreview',results:result.results,aliasId:alias.id});
   }
   function confirmDelete(collection,index) {
     if (collection === 'families') {
@@ -396,7 +396,7 @@ function startApp() {
     render(); requestFocus(() => $('#management-key'));
   }
   async function refreshCatalog() {
-    state.catalog = await api('/catalog/refresh','POST',{revision:state.saved.revision});
+    state.catalog = await api('/catalog/refresh','POST',{});
     const server = await api('/state');
     const previousPolicy = policyPayload(state.saved), nextPolicy = policyPayload(server);
     delete previousPolicy.revision; delete nextPolicy.revision;

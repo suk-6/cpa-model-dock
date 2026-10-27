@@ -34,7 +34,7 @@ test('all management routes require the exact Bearer key; unknown routes and mal
     assert.equal((await call(path, { method, auth: 'Bearer wrong' })).status, 401);
   }
   assert.equal((await call('/state/extra')).status, 404);
-  assert.equal((await call('/state', { method: 'DELETE' })).status, 404);
+  assert.equal((await call('/state', { method: 'DELETE' })).status, 405);
   const badJson = await fetch(origin + API_BASE + '/validate', { method: 'POST', headers: { Authorization: 'Bearer test-key' }, body: '{broken' });
   assert.equal(badJson.status, 400);
   assert.equal((await badJson.json()).error.code, 'invalid_json');
@@ -58,7 +58,7 @@ test('only the four fixed public resource files are served with correct MIME typ
   for (const suffix of ['', 'secret.json', 'constructor', 'toString', 'mock-server.mjs', '%2e%2e/mock-server.mjs', 'app.js/extra', '%61pp.js']) {
     assert.equal((await fetch(origin + RESOURCE_BASE + suffix)).status, 404, suffix);
   }
-  assert.equal((await fetch(origin + RESOURCE_BASE + 'app.js', { method: 'POST' })).status, 404);
+  assert.equal((await fetch(origin + RESOURCE_BASE + 'app.js', { method: 'POST' })).status, 405);
   assert.equal((await fetch(origin + '/web/assets/app.js')).status, 404);
 });
 
@@ -111,7 +111,7 @@ test('saved state projects editable fields, generates IDs, accepts stable local 
   const headerSaved = await save(noRevision, { 'If-Match': '"2"' });
   assert.equal(headerSaved.status, 200); assert.equal(headerSaved.data.revision, 3);
   assert.equal((await save(headerSaved.data, { 'If-Match': '"1"' })).status, 409);
-  assert.equal((await post('/catalog/refresh')).status, 409);
+  assert.equal((await post('/catalog/refresh')).status, 200);
   assert.equal((await post('/aliases/check')).status, 409);
   assert.equal((await post('/history/restore', { entry_id: 'x', scope: 'state' })).status, 409);
   const entries = (await call('/history')).data.entries;
@@ -212,6 +212,7 @@ test('alias dry-run orders 6.10 above 6.9, reports catalog-only candidates, appl
   assert.equal((await post('/aliases/check', { revision: initial.revision })).status, 409);
   const unchanged = await post('/aliases/check', { alias_id: 'al_sol', revision: current.revision });
   assert.equal(unchanged.data.results[0].last_result, 'unchanged');
+  assert.equal(unchanged.data.revision,current.revision);
   assert.equal((await call('/history')).data.entries.length, 1);
   current = await state();
   assert.equal((await post('/history/restore', { entry_id: entries[0].id, revision: current.revision, scope: 'state' })).status, 422);
@@ -297,19 +298,19 @@ test('unavailable policy fails closed and a valid state save recovers it', async
   assert.equal((await call('/overview')).data.policy_enabled, true);
 });
 
-test('catalog refresh is revision guarded, replaces snapshots, and retains last good on failure', async (t) => {
+test('catalog refresh needs no revision, replaces snapshots, and retains last good on failure', async (t) => {
   let fail = false;
   const { state, call, post } = await fixture(t, { refreshCatalog: (models) => {
     if (fail) throw new Error('credential token must never leak');
     return [...models, { id: 'gpt-7.0-sol', providers: ['codex'], routable: true }];
   } });
   const before = await state();
-  const refreshed = await post('/catalog/refresh', { revision: before.revision });
+  const refreshed = await post('/catalog/refresh');
   assert.equal(refreshed.status, 200); assert.equal(refreshed.data.ok, true);
   assert.ok(refreshed.data.models.some((model) => model.id === 'gpt-7.0-sol'));
-  assert.equal((await state()).revision, before.revision + 1);
+  assert.equal((await state()).revision, before.revision);
   fail = true;
-  const failed = await post('/catalog/refresh', { revision: (await state()).revision });
+  const failed = await post('/catalog/refresh', { revision: -999 });
   assert.equal(failed.status, 200); assert.equal(failed.data.ok, false);
   assert.deepEqual(failed.data.models, refreshed.data.models);
   assert.ok(!JSON.stringify(failed.data).includes('credential token'));
@@ -327,7 +328,8 @@ test('concurrent writes and refresh callbacks cannot overwrite a newer revision'
   while (!release) await new Promise((resolve) => setImmediate(resolve));
   const saved = await save(current); assert.equal(saved.status, 200);
   release([]);
-  assert.equal((await refresh).status, 409);
+  assert.equal((await refresh).status, 200);
+  assert.deepEqual((await state()).settings, saved.data.settings);
   assert.equal((await state()).revision, saved.data.revision);
 });
 
@@ -351,4 +353,111 @@ test('history pages newest first with an exclusive cursor; state restore undoes 
   assert.deepEqual(restored.data.settings, oldest.before.settings);
   assert.deepEqual(restored.data.aliases, oldest.before.aliases);
   assert.equal((await call('/history')).data.entries.length, 4);
+});
+
+test('wire responses use complete state, structured reasons, nullable errors, and exact envelopes', async (t) => {
+  const { state, save, post, call } = await fixture(t);
+  const keys = (value, expected) => assert.deepEqual(Object.keys(value).sort(), expected.split(' ').sort());
+  const reason = (value) => { keys(value,'code message'); assert.equal(typeof value.code,'string'); assert.equal(typeof value.message,'string'); };
+  const stateKeys='schema revision updated_at settings families builtin_families aliases rules alias_status';
+  const initial=await state(); keys(initial,stateKeys);
+  const overview=(await call('/overview')).data;
+  keys(overview,'plugin_version host_schema policy_enabled whitelist_enabled counts active_mappings recent_auto_updates catalog guard warnings');
+  keys(overview.guard,'enabled verified limitations'); keys(overview.catalog,'last_refresh_at ok error'); assert.equal(overview.catalog.error,null);
+  for (const mapping of overview.active_mappings) keys(mapping,'alias target');
+  for (const path of ['/catalog','/catalog/refresh']) {
+    const catalog=(path.endsWith('refresh') ? await post(path) : await call(path)).data;
+    keys(catalog,'refreshed_at ok error models');
+    for (const model of catalog.models) { keys(model,'id providers credential_count routable public reason'); reason(model.reason); }
+  }
+  const dry=(await post('/aliases/check',{dry_run:true,revision:'ignored'})).data;
+  keys(dry,'results revision');
+  for (const result of dry.results) {
+    keys(result,'alias_id current_target candidates last_checked_at last_result reason'); reason(result.reason);
+    for (const candidate of result.candidates) { keys(candidate,'id version routable chosen reason'); reason(candidate.reason); }
+  }
+  assert.deepEqual(await state(),initial);
+  const checked=await post('/aliases/check',{revision:initial.revision});
+  assert.equal(checked.status,200);
+  for (const status of Object.values((await state()).alias_status)) { keys(status,'current_target candidates last_checked_at last_result reason target_routable'); reason(status.reason); }
+  const entry=(await call('/history')).data.entries[0]; keys(entry,'id at actor kind summary before after'); keys(entry.before,'alias_id target'); keys(entry.after,'alias_id target');
+  const restored=await post('/history/restore',{entry_id:entry.id,scope:'alias_target',revision:checked.data.revision}); keys(restored.data,stateKeys);
+  const saved=await save(await state()); keys(saved.data,stateKeys);
+  const conflict=await save(initial); keys(conflict.data,'error state'); keys(conflict.data.error,'code message'); keys(conflict.data.state,stateKeys);
+  const explain=(await post('/explain',{model:'gpt-sol'})).data; keys(explain,'allowed status code reason steps resolved_target'); explain.steps.forEach(reason);
+});
+
+test('revision guards reject missing, malformed, disagreeing tokens but readonly operations ignore them', async (t) => {
+  const { state, post, call }=await fixture(t);
+  const current=await state();
+  for (const revision of [null,-1,1.5,'1',true,99]) {
+    const result=await post('/aliases/check',{revision});
+    assert.equal(result.status,409); assert.equal(result.data.error.code,'revision_conflict'); assert.deepEqual(result.data.state,current);
+  }
+  for (const header of ['1','W/"1"','*','"1", "2"','"-1"']) {
+    const result=await call('/aliases/check',{method:'POST',headers:{'If-Match':header},body:{revision:current.revision}});
+    assert.equal(result.status,409,header);
+  }
+  assert.equal((await call('/aliases/check',{method:'POST',headers:{'If-Match':'"0"'},body:{revision:current.revision}})).status,409);
+  assert.equal((await post('/aliases/check',{dry_run:null,revision:current.revision})).status,422);
+  assert.equal((await post('/aliases/check',{alias_id:null,revision:current.revision})).status,422);
+  assert.equal((await post('/aliases/check',{dry_run:true,revision:null})).status,200);
+  assert.equal((await post('/catalog/refresh',{revision:null})).status,200);
+  assert.deepEqual(await state(),current);
+});
+
+test('unchanged pinned and disabled checks update status without changing policy revision, timestamp, or history', async (t) => {
+  const { state, post, save, call }=await fixture(t);
+  const draft=await state(); draft.aliases[0].enabled=false;
+  const saved=(await save(draft)).data;
+  const result=await post('/aliases/check',{revision:saved.revision});
+  assert.equal(result.data.revision,saved.revision);
+  assert.deepEqual(result.data.results.map((entry)=>entry.last_result),['kept','kept']);
+  const after=await state(); assert.equal(after.updated_at,saved.updated_at); assert.deepEqual(after.aliases,saved.aliases);
+  assert.equal((await call('/history')).data.entries.length,1);
+  assert.ok(after.alias_status.al_sol.last_checked_at);
+});
+
+test('editable projection ignores runtime nulls, defaults optional fields, and keeps offline targets repairable', async (t) => {
+  const { state, save, post }=await fixture(t);
+  const current=await state();
+  const saved=await save({revision:current.revision,schema:null,updated_at:null,builtin_families:null,alias_status:null,settings:current.settings,
+    families:[{name:'Custom',template:'custom-{version}'}],aliases:[{id:'stable',name:'offline',target:'missing-model',mode:'pinned',status:null,unknown:null}],rules:[]});
+  assert.equal(saved.status,200); assert.equal(saved.data.aliases[0].id,'stable'); assert.equal(saved.data.aliases[0].enabled,true);
+  assert.equal(saved.data.aliases[0].expose_original,false); assert.equal(saved.data.aliases[0].rewrite_response_model,null); assert.equal(saved.data.families[0].allow_dated,true);
+  const unavailable=(await post('/explain',{model:'offline'})).data; assert.equal(unavailable.status,503); assert.equal(unavailable.code,'alias_target_unavailable');
+  assert.equal((await post('/rules/preview',{settings:null})).status,422);
+  for (const alias of [
+    {id:null,name:'x',target:'missing',mode:'pinned'},
+    {name:'x',target:'missing',mode:'auto',auto:{family:'builtin:gpt-sol',health_check:null}},
+    {name:'x',target:'missing',mode:'auto',auto:{family:null}},
+  ]) assert.equal((await post('/rules/preview',{aliases:[alias]})).status,422);
+  assert.equal((await post('/explain',{model:'offline',draft:{aliases:[{name:'bad/name',target:'missing-model',mode:'pinned'}]}})).status,422);
+});
+
+test('rule matches include hidden and catalog-only models while final public lists remain routable', async (t) => {
+  const { post }=await fixture(t);
+  const preview=(await post('/rules/preview',{settings:{whitelist_enabled:true},rules:[
+    {id:'family',enabled:true,kind:'family',value:'builtin:gpt-sol'},
+    {id:'off',enabled:false,kind:'pattern',value:'*'},
+    {id:'publish',enabled:true,kind:'alias',value:'gpt-sol'},
+  ]})).data;
+  assert.ok(preview.rules[0].matches.includes('gpt-6.1-sol')); assert.ok(preview.rules[0].matches.includes('gpt-6.12-sol'));
+  assert.ok(!preview.public_models.includes('gpt-6.1-sol')); assert.ok(!preview.public_models.includes('gpt-6.12-sol'));
+  assert.deepEqual(preview.rules[1].matches,[]); assert.deepEqual(preview.rules[2].matches,['gpt-sol']); assert.deepEqual(preview.public_aliases,['gpt-sol']);
+});
+
+test('failed refresh prevents auto upgrades; missing historical alias and invalid pagination fail without writes', async (t) => {
+  const { state, post, call }=await fixture(t,{refreshCatalog(){throw Error('private');}});
+  const initial=await state();
+  await post('/catalog/refresh');
+  const kept=await post('/aliases/check',{revision:initial.revision}); assert.equal(kept.data.results[0].reason.code,'catalog_unavailable'); assert.equal(kept.data.revision,initial.revision);
+  for (const query of ['limit=1&limit=2','limit=1e2','before=x&before=y']) assert.equal((await call(`/history?${query}`)).status,400);
+  assert.equal((await post('/history/restore',{revision:initial.revision})).status,422);
+  assert.equal((await post('/history/restore',{revision:initial.revision,entry_id:'missing',scope:'state'})).data.error.code,'entry_not_found');
+  const other=await fixture(t); const applied=await other.post('/aliases/check',{revision:(await other.state()).revision});
+  const entry=(await other.call('/history')).data.entries[0]; const removed=await other.state(); removed.aliases=[]; removed.rules=[];
+  const saved=await other.save(removed);
+  assert.equal((await other.post('/history/restore',{revision:saved.data.revision,entry_id:entry.id,scope:'alias_target'})).status,422);
+  assert.equal((await other.state()).revision,saved.data.revision);
 });
