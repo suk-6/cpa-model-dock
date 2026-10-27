@@ -260,3 +260,23 @@ func TestNestedNullsAndPartialDraftsKeepSavedState(t *testing.T) {
 	}
 	decode(t, call(t, f.h, "POST", "/explain", map[string]any{"model": "latest", "draft": draft}), http.StatusOK)
 }
+
+func TestNewFamilyReferencesCanBeSavedInOneMutation(t *testing.T) {
+	f := setup(t)
+	state := f.current.Load().StateCopy()
+	state.Settings.WhitelistEnabled = true
+	state.Families = []policy.Family{{ID: "fam_custom", Name: "Sol", Template: "gpt-{version}-sol"}}
+	state.Aliases = []policy.Alias{{Name: "sol", Mode: "auto", Enabled: true, Target: "gpt-6.1-sol", Auto: policy.Auto{Family: "fam_custom"}}}
+	state.Rules = []policy.Rule{{ID: "r_publish", Kind: "alias", Enabled: true, Value: "sol"}, {ID: "r_family", Kind: "family", Enabled: true, Value: "fam_custom"}}
+	saved := decode(t, call(t, f.h, "PUT", "/state", state), 200)
+	if saved["families"].([]any)[0].(map[string]any)["id"] != "fam_custom" {
+		t.Fatal(saved)
+	}
+	if d := f.current.Load().Decide("sol"); !d.Allowed {
+		t.Fatal(d)
+	}
+	// Alias IDs remain server-owned even though family/rule IDs support references.
+	next := f.current.Load().StateCopy()
+	next.Aliases = append(next.Aliases, policy.Alias{ID: "client-alias", Name: "other", Enabled: true, Mode: "pinned", Target: "gpt-6.2-sol"})
+	decode(t, call(t, f.h, "PUT", "/state", next), 422)
+}

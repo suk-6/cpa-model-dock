@@ -206,10 +206,10 @@ func TestValidationKeepsState(t *testing.T) {
 		t.Fatalf("bad validation response: %v", validated)
 	}
 	state = before.State
-	state.Rules = []policy.Rule{{ID: "client-picked", Enabled: true, Kind: "exact", Value: "gpt-6.1-sol"}}
+	state.Aliases = []policy.Alias{{ID: "client-picked", Name: "sol", Enabled: true, Mode: "pinned", Target: "gpt-6.1-sol"}}
 	decode(t, call(t, f.h, "PUT", "/state", state), 422)
 	if f.saves != 0 {
-		t.Fatal("client selected ID saved")
+		t.Fatal("client selected alias ID saved")
 	}
 }
 

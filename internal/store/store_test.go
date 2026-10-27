@@ -345,3 +345,21 @@ func TestFailedPersistenceDoesNotPublishRevision(t *testing.T) {
 		t.Fatal("failed save left phantom history")
 	}
 }
+
+func TestSemanticallyCorruptPrimaryFallsBackToLastGood(t *testing.T) {
+	dir := t.TempDir()
+	s := openStore(t, dir)
+	first := saveState(t, s, stateOf(t, s))
+	second := first
+	second.Settings.WhitelistEnabled = true
+	second = saveState(t, s, second)
+	second.Rules = []policy.Rule{{ID: "bad", Enabled: true, Kind: "unknown", Value: "anything"}}
+	data, _ := json.Marshal(second)
+	if e := os.WriteFile(filepath.Join(dir, "state.json"), data, 0600); e != nil {
+		t.Fatal(e)
+	}
+	restored := stateOf(t, openStore(t, dir))
+	if restored.Revision != first.Revision || restored.Settings.WhitelistEnabled {
+		t.Fatal(restored)
+	}
+}

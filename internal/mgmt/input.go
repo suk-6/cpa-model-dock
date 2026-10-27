@@ -150,7 +150,7 @@ func assignIDs(state *policy.State, current policy.State, persisted bool) []poli
 	assign := func(id *string, kind, prefix string, index int) {
 		path := kind + "[" + strconv.Itoa(index) + "].id"
 		if *id != "" {
-			if persisted && !known[kind][*id] {
+			if persisted && kind == "aliases" && !known[kind][*id] {
 				details = append(details, detail(path, "server_generated_id", "Omit the ID for a new entry"))
 			}
 			return

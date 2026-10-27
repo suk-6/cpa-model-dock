@@ -324,6 +324,11 @@ func decodeState(data []byte) (policy.State, error) {
 			}
 		}
 	}
+	// Domain corruption also falls back to the backup. Runtime construction
+	// checks static structure without requiring a catalog during startup.
+	if !policy.New(state, policy.Catalog{}, true).Available() {
+		return state, ErrInvalidState
+	}
 	return state, nil
 }
 
