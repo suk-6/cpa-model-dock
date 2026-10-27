@@ -28,8 +28,12 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 )
 
-// The host owns this table until shutdown. Holding the read lock across a call
-// guarantees its allocator stays available until the response has been freed.
+// CPA v8.0.44 loader_unix.go:close keeps the plugin image mapped and deliberately
+// retains the C host API/context allocations. host_callbacks_unix.go exports a
+// static cliproxyHostFree. Copy the table under this lock, then use that copy for
+// both call and free: shutdown retires global access without waiting for C I/O.
+// In-flight callbacks retain their host entry locally; callbacks beginning after
+// host registration deletion fail the lookup without accessing freed context.
 var native struct {
 	sync.RWMutex
 	host *C.cliproxy_host_api
@@ -90,10 +94,12 @@ func cliproxyPluginShutdown() { instance.Close(); native.Lock(); native.host = n
 
 func callHost(method string, payload []byte) ([]byte, error) {
 	native.RLock()
-	defer native.RUnlock()
 	if native.host == nil {
+		native.RUnlock()
 		return nil, errors.New("host callback unavailable")
 	}
+	host := *native.host
+	native.RUnlock()
 	m := C.CString(method)
 	defer C.free(unsafe.Pointer(m))
 	var p unsafe.Pointer
@@ -102,9 +108,9 @@ func callHost(method string, payload []byte) ([]byte, error) {
 		defer C.free(p)
 	}
 	var out C.cliproxy_buffer
-	rc := C.dock_host_call(native.host, m, (*C.uint8_t)(p), C.size_t(len(payload)), &out)
+	rc := C.dock_host_call(&host, m, (*C.uint8_t)(p), C.size_t(len(payload)), &out)
 	if out.ptr != nil {
-		defer C.dock_host_free(native.host, out.ptr, out.len)
+		defer C.dock_host_free(&host, out.ptr, out.len)
 	}
 	if rc != 0 || out.len > C.size_t(1<<31-1) {
 		return nil, errors.New("host callback failed")

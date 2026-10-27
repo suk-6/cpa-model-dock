@@ -27,6 +27,12 @@ const pluginID = "cpa-model-dock"
 
 var pluginVersion = "0.1.0"
 
+const healthProbeTimeout = 5 * time.Second
+
+// Process-wide, so a native callback ignoring cancellation cannot leak a new
+// paid probe worker on every timeout, restart, or state-directory replacement.
+var healthProbes hostabi.CallGate
+
 type config struct {
 	StateDir        string `yaml:"state-dir"`
 	RefreshInterval string `yaml:"catalog-refresh-interval"`
@@ -70,6 +76,7 @@ type application struct {
 	hooks        *hooks.Hooks
 	host         hostabi.Caller
 	status       map[string]autoupdate.Status
+	workCtx      context.Context
 	cancel       context.CancelFunc
 	baseInterval time.Duration
 }
@@ -83,7 +90,8 @@ func newApplication(dir string, host hostabi.Caller) (*application, error) {
 	if e != nil && !errors.Is(e, store.ErrUnavailable) {
 		return nil, e
 	}
-	a := &application{current: &atomic.Pointer[policy.Snapshot]{}, store: disk, catalog: catalog.New(host), host: host, status: map[string]autoupdate.Status{}}
+	workCtx, cancel := context.WithCancel(context.Background())
+	a := &application{workCtx: workCtx, cancel: cancel, current: &atomic.Pointer[policy.Snapshot]{}, store: disk, catalog: catalog.New(host), host: host, status: map[string]autoupdate.Status{}}
 	a.current.Store(policy.New(state, policy.Catalog{Models: []policy.Model{}}, valid))
 	a.hooks = hooks.New(a.current.Load)
 	return a, nil
@@ -92,6 +100,9 @@ func (a *application) publish(next *policy.Snapshot) { a.hooks.Update(next); a.c
 func (a *application) save(expected int64, state policy.State, actor, kind, summary string) (policy.State, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.workCtx.Err() != nil {
+		return policy.State{}, store.ErrUnavailable
+	}
 	snap := a.current.Load()
 	if expected != snap.StateCopy().Revision {
 		return policy.State{}, store.ErrRevisionConflict
@@ -111,6 +122,9 @@ func (a *application) save(expected int64, state policy.State, actor, kind, summ
 func (a *application) restore(expected int64, id, scope string) (policy.State, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.workCtx.Err() != nil {
+		return policy.State{}, store.ErrUnavailable
+	}
 	snap := a.current.Load()
 	if expected != snap.StateCopy().Revision {
 		return policy.State{}, store.ErrRevisionConflict
@@ -178,37 +192,75 @@ func (a *application) restore(expected int64, id, scope string) (policy.State, e
 	}
 	return restored, nil
 }
-func (a *application) refresh(ctx context.Context) policy.Catalog {
-	c := a.catalog.Refresh(ctx)
-	a.mu.Lock()
-	snap := a.current.Load()
-	a.publish(policy.New(snap.StateCopy(), c, snap.Available()))
-	a.mu.Unlock()
-	return c
-}
-func (a *application) onCatalog(c policy.Catalog) {
-	a.mu.Lock()
-	snap := a.current.Load()
-	a.publish(policy.New(snap.StateCopy(), c, snap.Available()))
-	a.mu.Unlock()
-	if _, e := a.check(context.Background(), "", false); e != nil {
-		hostabi.Log(a.host, "warn", "CPAModelDock automatic evaluation could not be saved")
-	}
-}
-func (a *application) check(ctx context.Context, id string, dryRun bool) (any, error) {
+
+// workContext pins this lifecycle without holding a mutation lock during I/O.
+func (a *application) workContext() context.Context {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.checkLocked(ctx, id, dryRun)
+	return a.workCtx
 }
-func (a *application) checkLocked(ctx context.Context, id string, dryRun bool) (any, error) {
-	snap := a.current.Load()
-	state := snap.StateCopy()
-	var probe autoupdate.Probe
-	if !dryRun {
-		probe = a.probe
+
+func linkedContext(ctx, lifecycle context.Context) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(lifecycle, cancel)
+	if lifecycle.Err() != nil {
+		cancel()
 	}
-	var evaluated policy.State
-	var status map[string]autoupdate.Status
+	return ctx, func() { stop(); cancel() }
+}
+
+func (a *application) refresh(ctx context.Context) policy.Catalog {
+	life := a.workContext()
+	ctx, cancel := linkedContext(ctx, life)
+	defer cancel()
+	c := a.catalog.Refresh(ctx)
+	a.publishCatalog(life, c)
+	return a.current.Load().CatalogCopy()
+}
+
+func (a *application) publishCatalog(life context.Context, c policy.Catalog) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if life != a.workCtx || life.Err() != nil {
+		return false
+	}
+	snap := a.current.Load()
+	if c.Generation <= snap.CatalogCopy().Generation {
+		return false
+	}
+	return a.catalog.WithCurrentGeneration(c.Generation, func() {
+		a.publish(policy.New(snap.StateCopy(), c, snap.Available()))
+	})
+}
+
+func (a *application) onCatalog(c policy.Catalog) { a.onCatalogContext(a.workContext(), c) }
+func (a *application) onCatalogContext(life context.Context, c policy.Catalog) {
+	if !a.publishCatalog(life, c) {
+		return
+	}
+	// Bind evaluation to this delivery, not whatever a later refresh published.
+	// Conflicts/cancellation leave the last policy intact; the next poll retries.
+	_, _ = a.evaluate(life, nil, &c.Generation, "", false)
+}
+
+func (a *application) check(ctx context.Context, id string, dryRun bool) (any, error) {
+	return a.evaluate(ctx, nil, nil, id, dryRun)
+}
+
+// Capture immutable inputs, perform paid work without a.mu, then compare both
+// policy revision and catalog generation before touching persistence or status.
+func (a *application) evaluate(ctx context.Context, expected *int64, generation *uint64, id string, dryRun bool) (any, error) {
+	a.mu.Lock()
+	snap, life := a.current.Load(), a.workCtx
+	state := snap.StateCopy()
+	if life.Err() != nil {
+		a.mu.Unlock()
+		return nil, context.Canceled
+	}
+	if !dryRun && ((expected != nil && *expected != state.Revision) || (generation != nil && *generation != snap.CatalogCopy().Generation)) {
+		a.mu.Unlock()
+		return nil, store.ErrRevisionConflict
+	}
 	if id != "" {
 		found := false
 		for _, alias := range state.Aliases {
@@ -218,37 +270,78 @@ func (a *application) checkLocked(ctx context.Context, id string, dryRun bool) (
 			}
 		}
 		if !found {
+			a.mu.Unlock()
 			return nil, store.ErrEntryNotFound
 		}
+	}
+	a.mu.Unlock()
+	ctx, cancel := linkedContext(ctx, life)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	// Reject a completed refresh even when its delivery is still queued on a.mu.
+	if !dryRun && !a.catalog.WithCurrentGeneration(snap.CatalogCopy().Generation, func() {}) {
+		return nil, store.ErrRevisionConflict
+	}
+	var probe autoupdate.Probe
+	if !dryRun {
+		probe = a.probe
+	}
+	var evaluated policy.State
+	var status map[string]autoupdate.Status
+	if id != "" {
 		evaluated, status = autoupdate.EvaluateAlias(ctx, snap, probe, id)
 	} else {
 		evaluated, status = autoupdate.Evaluate(ctx, snap, probe)
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if dryRun {
 		return status, nil
 	}
-	changed := false
-	for i := range state.Aliases {
-		for _, updated := range evaluated.Aliases {
-			if state.Aliases[i].ID == updated.ID && state.Aliases[i].Target != updated.Target {
-				state.Aliases[i].Target = updated.Target
-				changed = true
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	current := a.current.Load()
+	if life != a.workCtx || life.Err() != nil || ctx.Err() != nil {
+		return nil, context.Canceled
+	}
+	if current.StateCopy().Revision != state.Revision || current.CatalogCopy().Generation != snap.CatalogCopy().Generation {
+		return nil, store.ErrRevisionConflict
+	}
+	var commitErr error
+	fresh := a.catalog.WithCurrentGeneration(snap.CatalogCopy().Generation, func() {
+		changed := false
+		for i := range state.Aliases {
+			for _, updated := range evaluated.Aliases {
+				if state.Aliases[i].ID == updated.ID && state.Aliases[i].Target != updated.Target {
+					state.Aliases[i].Target = updated.Target
+					changed = true
+				}
 			}
 		}
-	}
-	if changed {
-		saved, e := a.store.Save(state.Revision, state, "auto", "alias_target", "Updated aliases to newer routable family targets")
-		if e != nil {
-			return nil, e
+		if changed {
+			saved, err := a.store.Save(state.Revision, state, "auto", "alias_target", "Updated aliases to newer routable family targets")
+			if err != nil {
+				commitErr = err
+				return
+			}
+			a.publish(policy.New(saved, snap.CatalogCopy(), true))
 		}
-		a.publish(policy.New(saved, snap.CatalogCopy(), true))
-	}
-	if id == "" {
-		a.status = status
-	} else {
-		for k, v := range status {
-			a.status[k] = v
+		if id == "" {
+			a.status = status
+		} else {
+			for k, v := range status {
+				a.status[k] = v
+			}
 		}
+	})
+	if !fresh {
+		return nil, store.ErrRevisionConflict
+	}
+	if commitErr != nil {
+		return nil, commitErr
 	}
 	return status, nil
 }
@@ -256,9 +349,11 @@ func (a *application) probe(ctx context.Context, alias policy.Alias, model polic
 	if a.host == nil {
 		return errors.New("host callback unavailable")
 	}
+	ctx, cancel := context.WithTimeout(ctx, healthProbeTimeout)
+	defer cancel()
 	body, _ := json.Marshal(map[string]any{"model": model.ID, "messages": []map[string]string{{"role": "user", "content": "Hi"}}, "max_tokens": 1, "stream": false})
 	var out pluginapi.HostModelExecutionResponse
-	err := a.host.Call(ctx, pluginabi.MethodHostModelExecute, pluginapi.HostModelExecutionRequest{EntryProtocol: "openai", Model: model.ID, ForcedProvider: alias.Provider, Body: body}, &out)
+	err := healthProbes.Call(ctx, a.host, pluginabi.MethodHostModelExecute, pluginapi.HostModelExecutionRequest{EntryProtocol: "openai", Model: model.ID, ForcedProvider: alias.Provider, Body: body}, &out)
 	if err != nil || out.StatusCode < 200 || out.StatusCode >= 300 {
 		return errors.New("health check failed")
 	}
@@ -273,19 +368,26 @@ func (a *application) setInterval(settings policy.Settings) {
 }
 func (a *application) start(interval time.Duration) {
 	a.stop()
+	a.mu.Lock()
 	a.baseInterval = interval
 	if seconds := a.current.Load().StateCopy().Settings.RefreshIntervalSeconds; seconds > 0 {
 		interval = time.Duration(seconds) * time.Second
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	a.cancel = cancel
-	a.catalog.Start(ctx, interval, a.onCatalog)
+	a.workCtx, a.cancel = ctx, cancel
+	a.mu.Unlock()
+	a.catalog.Start(ctx, interval, func(c policy.Catalog) { a.onCatalogContext(ctx, c) })
+}
+
+// Cancel before acquiring the runtime write lock: management Dispatch holds its
+// read lock while awaiting checks, so cancellation must be reachable by writers.
+func (a *application) cancelWork() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.cancel()
 }
 func (a *application) stop() {
-	if a.cancel != nil {
-		a.cancel()
-		a.cancel = nil
-	}
+	a.cancelWork()
 	a.catalog.Stop()
 }
 func (a *application) close() { a.stop(); a.hooks.Close() }
@@ -306,12 +408,7 @@ func (a *application) management(schema uint32, guard bool) *mgmt.Handler {
 }
 
 func (a *application) checkRevision(ctx context.Context, expected int64, id string, dryRun bool) (any, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if !dryRun && expected != a.current.Load().StateCopy().Revision {
-		return nil, store.ErrRevisionConflict
-	}
-	return a.checkLocked(ctx, id, dryRun)
+	return a.evaluate(ctx, &expected, nil, id, dryRun)
 }
 
 // Catalog refresh is independent of policy optimistic concurrency.

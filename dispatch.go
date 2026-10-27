@@ -22,12 +22,24 @@ type runtime struct {
 
 func newRuntime(host hostabi.Caller) *runtime { return &runtime{host: host} }
 func (r *runtime) Close() {
+	r.cancelWork()
 	r.Lock()
 	defer r.Unlock()
 	if r.app != nil {
 		r.app.close()
 	}
 	r.app = nil
+}
+
+// Do not wait for management readers to finish paid probes before cancelling
+// them. Copy the owner under a read lock; cancellation itself never calls the host.
+func (r *runtime) cancelWork() {
+	r.RLock()
+	a := r.app
+	r.RUnlock()
+	if a != nil {
+		a.cancelWork()
+	}
 }
 
 // Dispatch exercises exactly the same JSON envelopes as the native C entrypoint.
@@ -141,12 +153,18 @@ func (r *runtime) register(raw []byte) (any, error) {
 	if e != nil {
 		return nil, e
 	}
+	r.cancelWork()
 	r.Lock()
 	defer r.Unlock()
 	schema := min(req.SchemaVersion, pluginabi.SchemaVersion)
 	if r.app == nil || cfg.StateDir != r.dir {
 		next, err := newApplication(cfg.StateDir, r.host)
 		if err != nil {
+			// Validation succeeded but opening the replacement failed. Resume the
+			// existing lifecycle after the pre-lock cancellation, preserving policy.
+			if r.app != nil {
+				r.app.start(r.app.baseInterval)
+			}
 			return nil, errors.New("cannot open plugin state directory")
 		}
 		if r.app != nil {
