@@ -10,11 +10,9 @@ The plugin ID is `cpa-model-dock`; its display name is `CPAModelDock`. The modul
 
 The tested host baseline is **CPA v8.0.44**, native **ABI 1**, with plugin JSON schema **6–7** negotiation. Schema negotiation tests do not establish compatibility with every host using that ABI. Required management/resource APIs are present in locally inspected v8.0.37 source; **v8.0.37 is not a tested minimum version**. See [CPA ABI constants](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.44/sdk/pluginabi/types.go), [v8.0.37 API declarations](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.37/sdk/pluginapi/types.go), [plugin registration](dispatch.go), and [ABI tests](dispatch_test.go).
 
-Builds passed for Darwin amd64/arm64, Linux amd64/arm64, and Windows amd64. Go/ABI checks, Linux arm64 ABI smoke, and 38 Node tests passed; exact environments, artifact hashes, sizes, and limitations are in [verification](docs/verification.md) and [building](docs/building.md). Linux release outputs require **glibc ≥2.34**; these Debian-built binaries do not support musl-only Alpine. Windows native loading has not been tested.
+Builds passed for Darwin amd64/arm64, Linux amd64/arm64, and Windows amd64. Go/ABI checks, Linux arm64 ABI smoke, and Node tests passed; exact environments, artifact hashes, sizes, and limitations are in [verification](docs/verification.md) and [building](docs/building.md). Linux release outputs require **glibc ≥2.34**; these Debian-built binaries do not support musl-only Alpine. Windows native loading has not been tested.
 
-Actual CPA v8.0.44 management testing validated all four examples with `POST /validate` (`valid:true`) and saved/persisted revisions 1–4 with `PUT /state`. The fixture registered eight models but reported zero routable credentials; previews were empty and the automatic dry run returned `no_routable_candidates`. This verifies **validation and persistence only**, not inference routing or successful upgrades. The hidden original's explain result was `hidden_by_alias`, status 404. See the retained report and reproduction details in [verification](docs/verification.md).
-
-<!-- E2E: Add integration-agent evidence for real plugin inference routing, JSON/SSE rewriting, automatic target upgrades, and restart recovery. Management validation/save evidence alone does not establish these. -->
+On 2026-10-27, the full harness on **real CPA v8.0.44 with a fake OpenAI-compatible upstream** completed **29 PASS / 0 FAIL / 0 SKIP**. The upstream recorder verified pinned alias JSON/SSE routing, response-model rewriting, alias-only listing and denials, numeric automatic upgrades, removed-target failure without fallback, revision conflicts, atomic invalid-state rejection, and restart recovery of policy/history. This is not a live-provider credential test. Observation rows also confirmed gaps: valid built-in API keys bypass the realtime/live guard, and Gemini detail GET leaks hidden metadata. Unit-only, source-only and unverified cases are separated in [verification](docs/verification.md).
 
 ## Install and open Model Dock
 
@@ -97,7 +95,7 @@ The UI reads the management center's existing `cli-proxy-auth` or legacy `manage
 
 Overview shows saved policy. Aliases/Whitelist edit a draft; **Save changes** validates then saves, and **Discard** drops draft edits after confirmation. Checks and history restore require a clean draft. Catalog refresh preserves edits but a concurrent saved policy can cause a revision conflict. Select English or 한국어 in the UI.
 
-<!-- E2E: Verify the embedded UI inside the real management center, authenticated requests, CSP, key replacement, and conflict handling after backend/UI integration. -->
+Real-CPA evidence: all four public resources carried strict CSP; authenticated management calls succeeded. Separately, headless Chrome against real CPA rendered all four tabs in English and Korean with no CSP violations. The management-center iframe was checked only for resource loading; a real browser session login flow, key replacement and browser conflict handling were not verified. Key/storage logic has unit coverage; stale-write rejection was verified by the harness API checks.
 
 ## Policy and automatic upgrades
 
@@ -115,11 +113,11 @@ Comparison trims whitespace, ignores case, removes a trailing thinking suffix `(
 
 Automatic aliases match the **whole model name** against a family template. `gpt-{version}-sol` matches `gpt-6.1-sol`, not `gpt-6.1-sol-mini`. Numeric components determine order (`6.10 > 6.9`; `4-5 == 4.5`), then comparable dates. `{date}` supports full dates and unambiguous short dates; the parser does not invent a year/century to resolve uncertain ordering. Same-version dated/undated candidates, different date precision, tied best candidates, or incomparable prereleases can be ambiguous: **keep the current target**, record the reason. Never downgrade or move to an equal version; an unparseable current target is kept (`current_unparseable`). Prereleases (`preview`, `beta`, `alpha`, `exp`, `experimental`, `rc`, `nightly`, `dev`, `test`) are excluded by default. Family allow rules exclude prereleases as well.
 
-Built-in families are Sol, Astra, Luna, Claude Opus/Sonnet/Haiku/Fable, and Gemini Pro/Flash. Custom families use exactly one `{version}` and optionally one `{date}`. Only candidates advertised by enabled runtime credentials are selectable. Missing/disabled/unavailable credentials and catalog-only entries are not routable; a failed refresh keeps the last-good facts and target. This inventory cannot guarantee scheduler eligibility or inspect live per-model cooldowns atomically, and excludes static executor-only registry clients. Health checks are **off by default**; enabling one can make a paid minimal request through CPA before switching. A dry run does not make that paid probe. Sources: [version parser](internal/version/version.go), [auto evaluator](internal/autoupdate/evaluate.go), [catalog](internal/catalog/catalog.go), [probe implementation](app.go).
+Built-in families are Sol, Astra, Luna, Claude Opus/Sonnet/Haiku/Fable, and Gemini Pro/Flash. Custom families use exactly one `{version}` and optionally one `{date}`. Candidates use enabled runtime credential advertisements. Contract §4 also accepts per-client host model registrations as cached routability evidence for config-synthesized OpenAI-compatible clients omitted from runtime inventory; explicit disabled/unavailable evidence still wins. Other missing credentials and catalog-only entries do not establish routability; a failed refresh keeps the last-good facts and target. This inventory cannot guarantee scheduler eligibility or inspect live per-model cooldowns atomically, and excludes static executor-only registry clients. Health checks are **off by default**; enabling one can make a paid minimal request through CPA before switching. A dry run does not make that paid probe. Sources: [version parser](internal/version/version.go), [auto evaluator](internal/autoupdate/evaluate.go), [catalog](internal/catalog/catalog.go), [probe implementation](app.go).
 
 ## Four walkthroughs: UI and curl
 
-Use these on a test instance or review them before replacing an existing policy. Each JSON example is a **full state replacement**, not a patch, and removes unrelated aliases/rules. The target must already exist in the actual host catalog to save an alias; it can be known but temporarily unroutable. Register illustrative targets `gpt-6.1-sol`, `gpt-6-astra`, and `claude-opus-4-5` in your fixture/provider configuration as appropriate. See [example files](examples/README.md).
+Use these on a test instance or review them before replacing an existing policy. Each JSON example is a **full state replacement**, not a patch, and removes unrelated aliases/rules. Unknown or unroutable targets may be saved to keep offline aliases repairable; inference through them fails with 503 and no fallback. Register illustrative targets `gpt-6.1-sol`, `gpt-6-astra`, and `claude-opus-4-5` in your fixture/provider configuration as appropriate. See [example files](examples/README.md).
 
 ### Shared curl helper
 
@@ -173,7 +171,7 @@ curl --fail-with-body -sS "$CPA_ORIGIN/v1/chat/completions" \
 
 The last command is a real inference and may incur provider charges. It requires a routable upstream; saving the example alone does not establish that.
 
-<!-- E2E:pinned-sol Verify alias routing to gpt-6.1-sol with upstream call evidence. -->
+Real-CPA + fake-upstream evidence: the recorder confirmed `gpt-sol` reached `gpt-6.1-sol` for JSON and SSE, with global response rewriting off/on and the per-alias override checked.
 
 ### 2. Automatically advance within Sol
 
@@ -194,7 +192,7 @@ jq -n --argjson revision "$revision" '{revision:$revision,dry_run:false}' |
 
 A result of `kept` can be correct: no routable candidates, ambiguity, failed health check, or an unparseable current target must not trigger a guessed replacement.
 
-<!-- E2E:auto-sol Verify numeric upgrade, prerelease exclusion, ambiguity retention, and no downgrade against routable host fixtures. -->
+Real-CPA + fake-upstream evidence: numeric selection preferred `6.10` over `6.9`, excluded mini/preview candidates, and JSON/SSE reached `6.10`. Date ordering, ambiguous-candidate retention and no-downgrade edge cases have unit coverage only; they were not exercised by this real-CPA run.
 
 ### 3. Allow only Sol, Astra, and Claude Opus families
 
@@ -210,7 +208,7 @@ curl --fail-with-body -sS "$CPA_ORIGIN/v1/models" \
   -H "Authorization: Bearer $CPA_API_KEY"
 ```
 
-<!-- E2E:family-whitelist Verify Sol/Astra/Opus listing and direct request enforcement; explain alone is not inference evidence. -->
+Unit-only evidence for the decision rules used by this three-family policy: whole-family matching, prerelease exclusion, hiding and whitelist decisions. The real-CPA run tested alias-only listing and direct/prefixed/native/thinking/Claude/Gemini denials, not this exact Sol/Astra/Opus policy with successful inference for every family.
 
 ### 4. Publish only the alias, hide the original
 
@@ -228,7 +226,7 @@ curl -sS -i "$CPA_ORIGIN/v1/chat/completions" \
   -d '{"model":"gpt-6.1-sol","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
-<!-- E2E:aliases-only Verify alias-only list, successful alias inference, no upstream call for hidden originals, and JSON/SSE response-name rewriting. -->
+Real-CPA + fake-upstream evidence: `/v1/models` was exactly `[gpt-sol]`; alias JSON/SSE succeeded. Hidden original and thinking-form requests returned 404; prefixed/native/unrelated names returned 403, all with zero upstream calls. Response rewriting off/on and alias override were checked.
 
 ## State and management API
 
@@ -239,12 +237,12 @@ The stored schema is **1**. A newly initialized policy has revision 0, empty fam
 | `settings.whitelist_enabled` | Boolean, initial false. |
 | `settings.rewrite_response_model` | Boolean, initial false; aliases may override. |
 | `settings.refresh_interval_seconds` | 0 (host config) or integer ≥30; initial 300. |
-| `families[]` | `id`, `name`, `template`, optional `provider`, explicit `allow_dated`. Built-ins are read-only. |
+| `families[]` | `id`, `name`, `template`, optional `provider`, `allow_dated` defaults true. Built-ins are read-only. |
 | `aliases[]` | `id`, `name`, `enabled`, `mode` (`pinned`/`auto`), required `target`, `provider`, `expose_original`, nullable `rewrite_response_model`, `auto`. |
 | `aliases[].auto` | `family`, `include_prerelease`, `health_check`; flags default false. |
 | `rules[]` | `id`, `enabled`, `kind` (`exact`/`family`/`pattern`/`alias`), `value`, optional `note`. Patterns support `*` and `?`, not regular expressions. |
 
-**Send booleans explicitly.** The Go full-state decoder uses zero values for omitted booleans; it does not infer `enabled:true` or custom-family `allow_dated:true` from the mock's defaults. Missing provider is empty; missing/null alias rewrite inherits the global default. A full replacement requires all four top-level policy fields. New aliases must omit `id` so the server generates it; retain returned IDs when editing. Custom family/rule IDs can be supplied to reference them in the same save; all IDs must be unique. Alias names cannot collide case-insensitively with catalog models or other aliases; targets must be real known catalog IDs, not aliases. Sources: [types](internal/policy/types.go), [input decoding](internal/mgmt/input.go), [validation](internal/policy/validate.go), [examples](examples/README.md).
+**Full settings require both booleans and an integer refresh interval.** Omitted alias/rule `enabled` and custom-family `allow_dated` default true; `expose_original` and auto flags default false. The examples send values explicitly to make intent clear. Missing provider is empty; missing/null alias rewrite inherits the global default. A full replacement requires all four top-level policy fields. New aliases may omit `id` for server generation or supply a unique stable ID; retain IDs when editing. Custom family/rule IDs can be supplied to reference them in the same save; all IDs must be unique. Alias names cannot collide case-insensitively with catalog models or other aliases; targets identify upstream models, not other Dock aliases; unknown/unroutable targets remain saveable and fail inference with 503. Sources: [types](internal/policy/types.go), [input decoding](internal/mgmt/input.go), [validation](internal/policy/validate.go), [examples](examples/README.md).
 
 All paths below are relative to `/v0/management/plugins/cpa-model-dock`; all require the management key.
 
@@ -253,33 +251,129 @@ All paths below are relative to `/v0/management/plugins/cpa-model-dock`; all req
 | `GET /overview`, `GET /state`, `GET /catalog` | Saved policy, current revision, status and catalog. |
 | `PUT /state` | Full validated policy replacement; requires revision. |
 | `POST /validate` | Validate full draft and preview, without saving. **PUT is not supported.** |
-| `POST /catalog/refresh` | Refresh catalog and evaluate auto aliases; requires revision. |
+| `POST /catalog/refresh` | Refresh catalog only; no revision required and no policy/history/alias-status mutation. |
 | `POST /aliases/check` | Preview with `dry_run:true`; otherwise apply with revision. Optional `alias_id`. |
 | `POST /rules/preview` | Preview a draft's allow rules and public names. |
 | `POST /explain` | `{model,draft?}` policy explanation, no inference. |
 | `GET /history?limit=100&before=...` | Newest-first history; `before` is an exclusive entry-ID cursor. |
-| `POST /history/restore` | `{entry_id,revision,scope:"state"|"alias_target"}`. Reapply the selected entry's **after** value. |
+| `POST /history/restore` | `{entry_id,revision,scope:"state"|"alias_target"}`. Undo to the selected entry's **before** value as a new revision. |
 
-Mutations use a current body `revision` or quoted `If-Match: "<n>"`. If both are provided they must agree. Read-only previews/validate/explain and dry-run checks do not require revision. Invalid saves return 422 and change nothing; `/validate` reports policy validation results with HTTP 200 and `valid:true` or `valid:false`. Stale revisions return 409. Refetch GET state after mutations instead of predicting revision increments, particularly after a refresh or unchanged check. API runtime status/preview shapes may evolve during backend/UI integration; the binding contract and current backend take precedence over the development mock. Sources: [routes](internal/mgmt/handler.go), [views](internal/mgmt/views.go), [application](app.go).
+Mutations use a current body `revision` or quoted `If-Match: "<n>"`. If both are provided they must agree. Read-only previews/validate/explain and dry-run checks do not require revision. Invalid saves return 422 and change nothing; `/validate` reports policy validation results with HTTP 200 and `valid:true` or `valid:false`. Stale revisions return 409. Refetch GET state after mutations instead of predicting revision increments. Refresh and unchanged checks do not advance policy revision. API runtime status/preview shapes may evolve during backend/UI integration; the binding contract and current backend take precedence over the development mock. Sources: [routes](internal/mgmt/handler.go), [views](internal/mgmt/views.go), [application](app.go).
 
-History restore is **not “undo this entry.”** It reapplies the entry's `after` policy as a new revision; `alias_target` scope reapplies only changed targets for still-existing aliases. To return to an earlier configuration, select an entry whose **After** state is the desired policy. Older mock notes and UI help saying “Before” are stale; inspect the diff and use the backend semantics. Persistence uses atomic writes, a last-good `state.json.bak`, and capped `history.jsonl` (1000 entries). Load order is primary → backup → defaults only when neither exists; existing corrupt files without a valid backup yield `policy_unavailable`. Run one writer per state directory; there is no cross-process lock. See [store](internal/store/store.go) and [operations](docs/operations.md).
+History restore undoes to the selected entry's `before` value as a new revision. State scope restores the full policy; `alias_target` scope restores only that alias's target in the current policy and fails validation if the alias no longer exists. It never rolls revision backward or deletes history. Persistence uses atomic writes, a last-good `state.json.bak`, and capped `history.jsonl` (1000 entries). Load order is primary → backup → defaults only when neither exists; existing corrupt files without a valid backup yield `policy_unavailable`. Run one writer per state directory; there is no cross-process lock. See [store](internal/store/store.go) and [operations](docs/operations.md).
 
-## Enforcement boundaries and privacy
+## Known limitations, enforcement boundaries and privacy
 
 **This is not a universal security guarantee.** Use a unique highest plugin priority, trusted native code, and mandatory proxy restrictions for uncovered paths. Restrict direct access to CPA so clients cannot bypass that proxy. The [operations guide](docs/operations.md) gives concrete nginx/Caddy blocks.
 
 | Boundary | What v8.0.44 actually does |
 | --- | --- |
-| Realtime/live | No model hooks. The nonexclusive guard can deny when invoked with whitelist on, but stock startup registers config-access first and stops at the first successful authentication: valid built-in client keys can bypass it. Realtime client secrets also bypass fallback providers. Block `/v1/realtime*` and `/v1/live*` externally. |
-| Responses WebSocket | In-flight continuation frames do not rerun ModelRouter/BeforeAuth/AfterAuth. Explicit create/append model changes require replay rather than being silently accepted; steer uses the bound model for authorization but passes control fields through finalization/upstream validation. Strict deployments should block GET `/v1/responses` and GET `/backend-api/codex/responses`. |
-| Gemini model detail | GET `/v1beta/models/{id}` bypasses the filtered model-list hook. Restrict detail GET independently; POST inference is a different path/method. |
-| Management raw requests | POST `/v0/management/api-call` and POST `/v8/management/requests/api-call` do not use the model-policy pipeline. Restrict these privileged transports. |
+| Realtime/live | No model hooks. The nonexclusive guard can deny when invoked with whitelist on, but stock startup registers config-access first and stops at the first successful authentication: the real-CPA probes with valid built-in client keys observed no guard denial (native 503 `auth_not_found` both off/on). This guard is not protection for these keys. Realtime client secrets also bypass fallback providers. Block `/v1/realtime*` and `/v1/live*` externally. |
+| Responses WebSocket | Source-verified only: in-flight continuation frames do not rerun ModelRouter/BeforeAuth/AfterAuth. Explicit create/append model changes require replay rather than being silently accepted; steer uses the bound model for authorization but passes control fields through finalization/upstream validation. Frames cannot be filtered by URL path after upgrade. Strict deployments should block GET `/v1/responses` and GET `/backend-api/codex/responses`. |
+| Gemini model detail | Real CPA returned HTTP 200 with hidden model metadata at GET `/v1beta/models/{id}`; it bypasses the filtered model-list hook. Restrict detail GET independently; POST inference is a different path/method. |
+| Management raw requests | Source-verified only: POST `/v0/management/api-call` and POST `/v8/management/requests/api-call` do not use the model-policy pipeline. Deny these privileged transports from non-admin networks; CPA management authentication is still required for admins. |
 | Video content | GET `/openai/v1/videos/{video_id}/content` runs hooks for its metadata/status lookup, then downloads/copies binary content with a separate HTTP client outside model response/stream hooks. |
 | Final payload rules | Provider normalization and configured payload defaults/overrides/filters can run **after AfterAuth**. The plugin does not authorize every final byte sent upstream. |
 | Other plugins / load state | Higher-priority routers/interceptors, native executors, disabled/not-loaded/unloaded/fused plugins, and host changes remain trust boundaries. Priority alone cannot guarantee enforcement. |
 | In-flight requests | Requests pin policy/catalog snapshots; a later revocation does not retroactively revoke admitted work. Pins expire after completion or ten minutes of inactivity. |
 
-Codex Alpha Search is handled through ModelRouter rather than normal request hooks. A denied request uses the plugin's registered static denial executor; CPA rejects that non-provider Alpha route with 503. Allowed aliases require a compatible routable Codex target. Do not substitute an invented provider sentinel: CPA can ignore routes to unregistered providers. Strict deployments can also block both Alpha Search paths as shown in operations.
+Codex Alpha Search is effectively disabled **with the guard enabled whenever whitelist rules or alias target hiding require final-model authorization**: CPA exposes public IDs without credential mapping provenance, so even exact whitelisted raw, prefixed or CPA-native mapped names are unverifiable. Dock aliases are **always denied on Alpha, even with the guard off**, because OAuth forwards the original body model and API-key mappings resolve after selection without AfterAuth. Both Alpha paths returned the static denial executor's HTTP 503 with zero upstream calls, including published Dock aliases and native/prefix/raw exact allows. An unrestricted default policy passes native Alpha through; turning the guard off removes that conservative destination gate but cannot make Dock aliases work safely. The baseline only reached host `auth_not_found` without Codex credentials. Live Codex OAuth forwarding is source-verified only, not tested with real provider credentials. See [contract §6](docs/design/contract.md#6-guard--uncovered-endpoints).
+
+These concrete examples are for a dedicated gateway. **Proxy syntax/runtime validation remains unverified**; test in your deployment. Replace `10.20.30.0/24` with the admin network and prevent direct CPA access. Admins still need the CPA management key. Caddy `remote_ip` and nginx address restrictions use the connecting peer; review the trust boundary if another proxy sits in front.
+
+nginx exact `=` locations win; otherwise the longest prefix is remembered and the first matching regex in file order wins. A longest matching `^~` prefix skips regex checks **regardless of file position**; do not add bypassing exact/`^~` locations or earlier broad regex proxies. The Gemini regex matches the detail prefix, but its `if` rejects only GET. POST uses that location's own `proxy_pass`, preserving `:generateContent`/`:streamGenerateContent`; exact GET `/v1beta/models` uses the general proxy. Caddy uses `route` order and the combined GET+path matcher. See [official references and deployment checks](docs/operations.md#nginx).
+
+<details>
+<summary>nginx / Caddy examples</summary>
+
+```nginx
+server {
+    listen 127.0.0.1:8080;
+    server_name localhost;
+
+    location ~ ^/v1/(realtime|live) {
+        return 403;
+    }
+    location = /v0/management/api-call {
+        allow 10.20.30.0/24;
+        deny all;
+        proxy_pass http://127.0.0.1:8317;
+        proxy_http_version 1.1;
+    }
+    location = /v8/management/requests/api-call {
+        allow 10.20.30.0/24;
+        deny all;
+        proxy_pass http://127.0.0.1:8317;
+        proxy_http_version 1.1;
+    }
+    # Optional strict Alpha Search restrictions.
+    location = /v1/alpha/search {
+        return 403;
+    }
+    location = /backend-api/codex/alpha/search {
+        return 403;
+    }
+    location ~ ^/(v1|backend-api/codex)/responses/?$ {
+        if ($request_method = GET) { return 403; }
+        proxy_pass http://127.0.0.1:8317;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+    }
+    location ~ ^/v1beta/models/ {
+        if ($request_method = GET) { return 403; }
+        proxy_pass http://127.0.0.1:8317;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+    }
+    location ~ ^/openai/v1/videos/[^/]+/content/?$ {
+        if ($request_method = GET) { return 403; }
+        proxy_pass http://127.0.0.1:8317;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+    }
+    location / {
+        proxy_pass http://127.0.0.1:8317;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+    }
+}
+```
+
+```caddyfile
+http://127.0.0.1:8080 {
+    @live path /v1/realtime* /v1/live*
+    @rawManagementNonAdmin {
+        path /v0/management/api-call /v8/management/requests/api-call
+        not remote_ip 10.20.30.0/24
+    }
+    @alpha path /v1/alpha/search /backend-api/codex/alpha/search
+    @responsesWS {
+        method GET
+        path /v1/responses /v1/responses/ /backend-api/codex/responses /backend-api/codex/responses/
+    }
+    @geminiDetail {
+        method GET
+        path /v1beta/models/*
+    }
+    @videoContent {
+        method GET
+        path_regexp video ^/openai/v1/videos/[^/]+/content/?$
+    }
+    route {
+        respond @live 403
+        respond @rawManagementNonAdmin 403
+        respond @alpha 403
+        respond @responsesWS 403
+        respond @geminiDetail 403
+        respond @videoContent 403
+        reverse_proxy 127.0.0.1:8317 {
+            flush_interval -1
+        }
+    }
+}
+```
+
+</details>
 
 Request-hook denials use successful `Terminate` responses; ordinary hook errors would allow CPA to continue. Response/stream DTOs cannot set an HTTP status or terminate an already open socket, so recovery can sanitize a body or drop a chunk but cannot retroactively enforce a transport-level denial.
 
@@ -327,12 +421,12 @@ For cached/offline modules use `GOCACHE=/tmp/cpa-model-dock-go-cache GOFLAGS=-mo
 | --- | --- |
 | Plugin/menu absent | Both enable switches, plugin filename/dir, OS/arch, glibc/C runtime, loader errors, loaded version, priority. Static HTML alone is not a health check. |
 | 401/403 management | Use the management key and host management-access settings; an inference key is insufficient. Replace an expired tab key. |
-| 422 save / `valid:false` validate | Use POST validate, full policy fields, explicit booleans, known targets, unique names/IDs; omit IDs for new aliases. Read `error.details` or validation details. |
+| 422 save / `valid:false` validate | Use POST validate, full policy fields, required settings, valid target syntax and unique names/IDs. Read `error.details` or validation details. |
 | 409 save | Refetch revision and reconcile the draft; an auto update may have saved first. |
 | Empty list / 503 alias | Check whitelist rules, alias publication, target availability, provider pin, and catalog credential counts. Registered does not mean routable. |
 | Prefix/native alias denied | Stock host supplies no trusted prefix/mapping provenance; inspect the resolved target and AfterAuth policy. |
 | Auto keeps target | Check whole-family match, routability, numeric/date ambiguity, prerelease settings, catalog refresh, and health probe result. |
-| Restore differs from UI wording | Backend reapplies the selected entry's **After** state; old “Before” help is stale. |
+| Restore differs from UI wording | Restore undoes to the selected entry's **Before** value, creating a new revision. |
 | Corrupt/unwritable state | Verify service-user permissions; preserve backups and repair through the API. Do not delete state to silence a deny-all condition. |
 | Realtime/WS/detail appears unfiltered | Apply and test the proxy controls; these are documented host limitations. |
 
