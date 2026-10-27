@@ -90,6 +90,11 @@ A candidate matches a family only if the WHOLE id matches the template (optional
 `-{date}` when `allow_dated`), so `gpt-6.1-sol-mini` does NOT match `gpt-{version}-sol`.
 Pre-release markers (`preview|beta|alpha|exp|experimental|rc|nightly|dev|test`) appear as an extra
 trailing segment and are excluded unless `include_prerelease`.
+Optional calendar suffixes are recognized before parsing numeric versions, including when
+`allow_dated:false`; a dashed version cannot absorb a disabled, invalid, or ambiguous date suffix.
+A valid eight-digit calendar date is never a version component (including dotted/internal components).
+An explicit `{date}` token remains authoritative even when optional dates are disabled. Optional
+short dates are rejected when a template ending in `{version}` makes their interpretation ambiguous.
 Thinking suffix `(...)` is never part of a catalog id.
 
 Ordering: compare version numerically per component (6.10 > 6.9; 4-5 == 4.5), then date. If the top
@@ -151,7 +156,8 @@ Never queried per request. On failure keep last good snapshot, record a sanitize
 timestamp. Disabled or unavailable runtime credentials are not counted as routable. Missing
 runtime credentials remain unconfirmed, with one source-verified CPA v8.0.44 exception:
 config-synthesized OpenAI-compatible clients have IDs `openai-compatibility:<name>:<12 hex>`
-and matching provider `openai-compatible-<name>`, and are omitted by `auth.list/get_runtime`
+and a provider matching CPA's `OpenAICompatibleProviderKey(name)` (normally
+`openai-compatible-<name>`, preserving already-prefixed names and `openai-compatibility`), and are omitted by `auth.list/get_runtime`
 because they have neither a file path nor `runtime_only`. Their positive per-client model
 registrations in `auth.models` count as cached routability evidence; explicit disabled/unavailable
 runtime evidence still wins. Removed/disabled config clients lose registrations during CPA
@@ -364,7 +370,9 @@ filenames are served; GET and HEAD are supported. No management data is public.
 
 - `state.json` written atomically: temp file in same dir → fsync → rename → fsync dir; previous copy
   kept as `state.json.bak` (last good). `history.jsonl` append-only, capped (default 1000 entries,
-  compacted atomically).
+  compacted atomically). Primary rename is the commit point: a later directory open/fsync/close
+  error cannot roll it back. Memory and history retain the committed revision and the save returns
+  success; crash durability is unconfirmed in that case. Pre-replacement failures leave policy intact.
 - Load order: state.json → state.json.bak → if neither exists, defaults; if a file exists but both are
   corrupt → policy_unavailable (deny all) until a valid state is saved via API.
 - In-memory: immutable snapshot behind atomic pointer; each request pins one snapshot at BeforeAuth
