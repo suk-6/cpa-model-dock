@@ -3,6 +3,9 @@
 Built from source commit `08208c6` in the packaging worktree, using Go 1.26.10
 and CPA v8.0.44 SDK. These results do not include concurrent integration fixes.
 Docker 29.8.2 / OrbStack used a Linux arm64 daemon and Debian cross compilers.
+`go version -m /tmp/cpa-bin` confirms `CGO_ENABLED=1`, `darwin/arm64`,
+`vcs.revision=1f917e77c4562623aa49e9804d999524151a2f96` (CPA v8.0.44),
+and `vcs.modified=false`.
 
 ## Produced artifacts
 
