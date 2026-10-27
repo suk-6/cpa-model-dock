@@ -27,10 +27,15 @@ import (
 const MinInterval = 30 * time.Second
 const DefaultInterval = 5 * time.Minute
 
+// Survives service replacement: an uncancellable native inventory call cannot
+// accumulate one abandoned worker per poll/reconfigure.
+var inventoryCalls hostabi.CallGate
+
 type Service struct {
 	caller          hostabi.Caller
 	snapshot        atomic.Pointer[policy.Catalog]
-	refreshMu       sync.Mutex
+	refreshGate     chan struct{}
+	publicationMu   sync.Mutex
 	lifecycleMu     sync.Mutex
 	cancel          context.CancelFunc
 	done            chan struct{}
@@ -68,7 +73,7 @@ type runtimeResponse struct {
 }
 
 func New(caller hostabi.Caller) *Service {
-	s := &Service{caller: caller, intervalChanged: make(chan struct{}, 1)}
+	s := &Service{caller: caller, refreshGate: make(chan struct{}, 1), intervalChanged: make(chan struct{}, 1)}
 	s.interval.Store(int64(DefaultInterval))
 	initial := policy.Catalog{Models: []policy.Model{}, Prefixes: []string{}}
 	s.snapshot.Store(&initial)
@@ -80,8 +85,20 @@ func (s *Service) Snapshot() policy.Catalog { return copyCatalog(*s.snapshot.Loa
 // Refresh publishes only after every requested callback succeeds. Error text is
 // fixed and sanitized: host errors can contain credential identifiers/secrets.
 func (s *Service) Refresh(ctx context.Context) (result policy.Catalog) {
-	s.refreshMu.Lock()
-	defer s.refreshMu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	if ctx.Err() != nil {
+		return s.Snapshot()
+	}
+	select {
+	// A cancelled queue wait never acquired the refresh slot and did not
+	// attempt a refresh. It preserves status/generation; every accepted
+	// attempt, including callback cancellation/failure, publishes a generation.
+	case <-ctx.Done():
+		return s.Snapshot()
+	case s.refreshGate <- struct{}{}:
+	}
+	defer func() { <-s.refreshGate }()
 	defer func() {
 		if recover() != nil {
 			result = s.failed("host catalog callback failed")
@@ -90,14 +107,12 @@ func (s *Service) Refresh(ctx context.Context) (result policy.Catalog) {
 	if s.caller == nil {
 		return s.failed("host catalog callback unavailable")
 	}
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
 	var registrations modelsResponse
-	if err := s.caller.Call(ctx, pluginabi.MethodHostAuthModels, struct{}{}, &registrations); err != nil {
+	if err := inventoryCalls.CallWait(ctx, s.caller, pluginabi.MethodHostAuthModels, struct{}{}, &registrations); err != nil {
 		return s.failed("host model inventory unavailable")
 	}
 	var listed listResponse
-	if err := s.caller.Call(ctx, pluginabi.MethodHostAuthList, struct{}{}, &listed); err != nil {
+	if err := inventoryCalls.CallWait(ctx, s.caller, pluginabi.MethodHostAuthList, struct{}{}, &listed); err != nil {
 		return s.failed("host credential inventory unavailable")
 	}
 	runtimeByIndex := make(map[string]runtimeAuth)
@@ -106,7 +121,7 @@ func (s *Service) Refresh(ctx context.Context) (result policy.Catalog) {
 	for _, auth := range listed.Files {
 		if auth.AuthIndex != "" {
 			var current runtimeResponse
-			if err := s.caller.Call(ctx, pluginabi.MethodHostAuthGetRuntime, struct {
+			if err := inventoryCalls.CallWait(ctx, s.caller, pluginabi.MethodHostAuthGetRuntime, struct {
 				AuthIndex string `json:"auth_index"`
 			}{auth.AuthIndex}, &current); err != nil {
 				return s.failed("host credential runtime unavailable")
@@ -197,8 +212,7 @@ func (s *Service) Refresh(ctx context.Context) (result policy.Catalog) {
 	}
 	sort.Strings(next.Prefixes)
 	sort.Slice(next.Models, func(i, j int) bool { return next.Models[i].ID < next.Models[j].ID })
-	s.snapshot.Store(&next)
-	return copyCatalog(next)
+	return s.publish(next)
 }
 
 // CPA v8.0.44 config synthesis creates active OpenAI-compatible credentials
@@ -226,7 +240,12 @@ func configRegistration(c credentialModels) bool {
 			return false
 		}
 	}
-	return c.Provider == "openai-compatible-"+nameAndHash[:i]
+	name := nameAndHash[:i]
+	provider := name
+	if name != "openai-compatibility" && !strings.HasPrefix(name, "openai-compatible-") {
+		provider = "openai-compatible-" + name
+	}
+	return c.Provider == provider
 }
 
 func (s *Service) failed(message string) policy.Catalog {
@@ -234,8 +253,30 @@ func (s *Service) failed(message string) policy.Catalog {
 	next.OK, next.Error = false, message
 	// RefreshedAt records the attempted refresh; last-good model facts survive.
 	next.RefreshedAt = time.Now().UTC()
+	return s.publish(next)
+}
+
+// publish gives successful and failed attempts one completion order. No host
+// callback runs under publicationMu; application commits can fence this order.
+func (s *Service) publish(next policy.Catalog) policy.Catalog {
+	s.publicationMu.Lock()
+	defer s.publicationMu.Unlock()
+	next.Generation = s.snapshot.Load().Generation + 1
 	s.snapshot.Store(&next)
 	return copyCatalog(next)
+}
+
+// WithCurrentGeneration runs a short publication/commit only while generation is
+// still current. fn must not call Refresh or WithCurrentGeneration recursively.
+// This fences the check-and-publish gap without holding a lock during host I/O.
+func (s *Service) WithCurrentGeneration(generation uint64, fn func()) bool {
+	s.publicationMu.Lock()
+	defer s.publicationMu.Unlock()
+	if s.snapshot.Load().Generation != generation {
+		return false
+	}
+	fn()
+	return true
 }
 
 // Start replaces any existing poller and refreshes immediately. Cancellation or

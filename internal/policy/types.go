@@ -55,6 +55,8 @@ type Model struct {
 
 // Catalog contains only sanitized registration facts, never credential secrets.
 type Catalog struct {
+	// Generation orders completed refresh attempts, including failures; never a policy revision.
+	Generation  uint64    `json:"-"`
 	Models      []Model   `json:"models"`
 	Prefixes    []string  `json:"-"`
 	RefreshedAt time.Time `json:"refreshed_at"`

@@ -295,3 +295,122 @@ func TestConfigOpenAIRegistrationsWithoutFileRuntime(t *testing.T) {
 		}
 	}
 }
+
+func TestRefreshGenerationsIncludeFailuresAndFencePublication(t *testing.T) {
+	host := hostFixture()
+	s := New(host)
+	if s.Snapshot().Generation != 0 {
+		t.Fatal("initial generation")
+	}
+	good := s.Refresh(context.Background())
+	host.fail = pluginabi.MethodHostAuthModels
+	failed := s.Refresh(context.Background())
+	if good.Generation != 1 || failed.Generation != 2 || failed.OK {
+		t.Fatal(good, failed)
+	}
+	ran := false
+	if s.WithCurrentGeneration(good.Generation, func() { ran = true }) || ran {
+		t.Fatal("stale generation accepted")
+	}
+	if !s.WithCurrentGeneration(failed.Generation, func() { ran = true }) || !ran {
+		t.Fatal("current generation rejected")
+	}
+	host.fail = ""
+	recovered := s.Refresh(context.Background())
+	if recovered.Generation != 3 || !recovered.OK {
+		t.Fatal(recovered)
+	}
+	raw, _ := json.Marshal(recovered)
+	if strings.Contains(string(raw), "generation") {
+		t.Fatal("runtime generation leaked onto API", string(raw))
+	}
+}
+
+type blockedInventoryHost struct {
+	base             *fakeHost
+	entered, release chan struct{}
+}
+
+func (h *blockedInventoryHost) Call(ctx context.Context, method string, in, out any) error {
+	if method == pluginabi.MethodHostAuthModels {
+		close(h.entered)
+		<-h.release
+	}
+	return h.base.Call(ctx, method, in, out)
+}
+
+func TestCancelledQueuedRefreshDoesNotAttemptOrPublish(t *testing.T) {
+	host := &blockedInventoryHost{base: hostFixture(), entered: make(chan struct{}), release: make(chan struct{})}
+	s := New(host)
+	first := make(chan policy.Catalog, 1)
+	go func() { first <- s.Refresh(context.Background()) }()
+	<-host.entered // the first refresh owns the slot and is inside the callback
+	// A queue wait is not an accepted refresh attempt. Cancelling it cannot
+	// manufacture failure evidence about a host callback that never ran.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	queued := s.Refresh(ctx)
+	if ctx.Err() != context.DeadlineExceeded || queued.Generation != 0 || s.Snapshot().Generation != 0 {
+		t.Fatal(queued, ctx.Err())
+	}
+	close(host.release)
+	select {
+	case good := <-first:
+		// The older accepted operation may complete: the queued request was not a
+		// newer failed host observation. It never called the host or claimed a gen.
+		if !good.OK || good.Generation != 1 || host.base.calls[pluginabi.MethodHostAuthModels] != 1 {
+			t.Fatal(good)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("accepted refresh failed to finish")
+	}
+}
+
+func TestStartedCancelledRefreshPublishesFailure(t *testing.T) {
+	host := &blockedInventoryHost{base: hostFixture(), entered: make(chan struct{}), release: make(chan struct{})}
+	defer close(host.release)
+	s := New(host)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan policy.Catalog, 1)
+	go func() { done <- s.Refresh(ctx) }()
+	<-host.entered
+	cancel()
+	select {
+	case failed := <-done:
+		if failed.OK || failed.Generation != 1 || failed.Error != "host model inventory unavailable" {
+			t.Fatal(failed)
+		}
+		if s.Snapshot().Generation != 1 {
+			t.Fatal("accepted cancellation did not publish")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled refresh waited for synchronous callback")
+	}
+}
+
+func TestConfigProviderKeyCanonicalSpecialNames(t *testing.T) {
+	for _, name := range []string{"openai-compatibility", "openai-compatible-fixture"} {
+		t.Run(name, func(t *testing.T) {
+			id := "openai-compatibility:" + name + ":0123456789ab"
+			host := &fakeHost{models: `{"credentials":[{"id":"` + id + `","auth_index":"cfg","provider":"` + name + `","models":["m"]}]}`, list: `{"files":[]}`}
+			if m := find(t, New(host).Refresh(context.Background()), "m"); !m.Routable || m.CredentialCount != 1 {
+				t.Fatal(m)
+			}
+			base := credentialModels{ID: id, AuthIndex: "cfg", Provider: name, Models: []string{"m"}}
+			if !configRegistration(base) {
+				t.Fatal(base)
+			}
+			for _, bad := range []credentialModels{
+				{ID: id, Provider: name, Models: []string{"m"}},
+				{ID: id, AuthIndex: "cfg", Provider: name},
+				{ID: id, AuthIndex: "cfg", Provider: "openai-compatible-" + name, Models: []string{"m"}},
+				{ID: "openai-compatibility:" + name + ":bad", AuthIndex: "cfg", Provider: name, Models: []string{"m"}},
+			} {
+				if configRegistration(bad) {
+					t.Fatal("unconfirmed special registration accepted", bad)
+				}
+			}
+		})
+	}
+}
