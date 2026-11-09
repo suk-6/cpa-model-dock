@@ -195,13 +195,15 @@ Background poller (default 5 min, plus on demand) using host callbacks `host.aut
 `host.auth.list`/`get_runtime`. Snapshot: models → {providers[], credential_count, routable bool}. For routable entries, providers
 contains only enabled runtime advertisers; catalog-only entries retain their registered providers.
 Never queried per request. On failure keep last good snapshot, record a sanitized error + attempt
-timestamp. Disabled or unavailable runtime credentials are not counted as routable. Missing
+timestamp. Disabled runtime credentials are not counted as routable. CPA's runtime `unavailable`
+flag is a transient quota/backoff cooldown and is ignored: a cooling credential keeps its
+registrations, and CPA's scheduler selects a usable credential at request time. Missing
 runtime credentials remain unconfirmed, with one source-verified CPA v8.0.44 exception:
 config-synthesized OpenAI-compatible clients have IDs `openai-compatibility:<name>:<12 hex>`
 and a provider matching CPA's `OpenAICompatibleProviderKey(name)` (normally
 `openai-compatible-<name>`, preserving already-prefixed names and `openai-compatibility`), and are omitted by `auth.list/get_runtime`
 because they have neither a file path nor `runtime_only`. Their positive per-client model
-registrations in `auth.models` count as cached routability evidence; explicit disabled/unavailable
+registrations in `auth.models` count as cached routability evidence; explicit disabled
 runtime evidence still wins. Codex API-key config clients have the same omission;
 the exact `codex:apikey:<12 lowercase hex>[-positive decimal collision suffix]` ID with provider `codex`, a non-empty
 auth index, and registered models supplies the equivalent evidence. No arbitrary

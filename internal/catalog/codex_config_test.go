@@ -17,12 +17,17 @@ func TestConfigCodexRegistrationsWithoutFileRuntime(t *testing.T) {
 			if m := find(t, s.Refresh(context.Background()), "gpt-6-sol"); !m.Routable || m.CredentialCount != 1 || len(m.Providers) != 1 || m.Providers[0] != "codex" {
 				t.Fatalf("live Codex config registration lost: %+v", m)
 			}
-			for _, flag := range []string{`"disabled":true`, `"unavailable":true`, `"status":"disabled"`} {
+			for _, flag := range []string{`"disabled":true`, `"status":"disabled"`} {
 				host.list = `{"files":[{"id":"` + id + `","auth_index":"cfg"}]}`
 				host.runtime = map[string]string{"cfg": `{"auth":{"id":"` + id + `","auth_index":"cfg",` + flag + `}}`}
 				if m := find(t, s.Refresh(context.Background()), "gpt-6-sol"); m.Routable || m.CredentialCount != 0 {
-					t.Fatalf("explicit disabled/unavailable runtime overridden: %+v", m)
+					t.Fatalf("explicit disabled runtime overridden: %+v", m)
 				}
+			}
+			// A quota/backoff cooldown is transient; the registration stays routable.
+			host.runtime = map[string]string{"cfg": `{"auth":{"id":"` + id + `","auth_index":"cfg","unavailable":true,"status":"active"}}`}
+			if m := find(t, s.Refresh(context.Background()), "gpt-6-sol"); !m.Routable || m.CredentialCount != 1 {
+				t.Fatalf("cooling-down runtime hid registration: %+v", m)
 			}
 		})
 	}

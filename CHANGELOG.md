@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.3 — 2026-11-09
+
+- Fix models disappearing from listings when some accounts hit their usage
+  quota. CPA's transient `unavailable` cooldown flag no longer makes a
+  credential non-routable; CPA's scheduler still picks a usable account.
+
 ## 0.1.2 — 2026-10-27
 
 - Fix Responses streaming with response-name rewriting for Codex scanner lines,

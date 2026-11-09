@@ -274,7 +274,7 @@ func TestConfigOpenAIRegistrationsWithoutFileRuntime(t *testing.T) {
 	if m := find(t, s.Refresh(context.Background()), "gpt-6.1-sol"); !m.Routable || m.CredentialCount != 1 {
 		t.Fatalf("live config registration lost: %+v", m)
 	}
-	// If runtime evidence exists, its disabled/unavailable flag wins.
+	// If runtime evidence exists, its disabled flag wins.
 	host.list = `{"files":[{"id":"` + id + `","auth_index":"cfg"}]}`
 	host.runtime = map[string]string{"cfg": `{"auth":{"id":"` + id + `","auth_index":"cfg","disabled":true}}`}
 	if m := find(t, s.Refresh(context.Background()), "gpt-6.1-sol"); m.Routable {
@@ -412,5 +412,25 @@ func TestConfigProviderKeyCanonicalSpecialNames(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestQuotaCooldownDoesNotHideMultiAccountModels(t *testing.T) {
+	host := &fakeHost{
+		models: `{"credentials":[` +
+			`{"id":"codex-a.json","auth_index":"a","provider":"codex","models":["gpt-6-sol"]},` +
+			`{"id":"codex-b.json","auth_index":"b","provider":"codex","models":["gpt-6-sol"]},` +
+			`{"id":"codex-c.json","auth_index":"c","provider":"codex","models":["gpt-6-sol"]}]}`,
+		list: `{"files":[{"auth_index":"a"},{"auth_index":"b"},{"auth_index":"c"}]}`,
+		runtime: map[string]string{
+			"a": `{"auth":{"id":"codex-a.json","auth_index":"a","status":"active","unavailable":true}}`,
+			"b": `{"auth":{"id":"codex-b.json","auth_index":"b","status":"active","unavailable":true}}`,
+			"c": `{"auth":{"id":"codex-c.json","auth_index":"c","status":"active","unavailable":true}}`,
+		},
+	}
+	// Even a stale cooldown flag on every account must not drop the model;
+	// CPA's scheduler decides request-time eligibility.
+	if m := find(t, New(host).Refresh(context.Background()), "gpt-6-sol"); !m.Routable || m.CredentialCount != 3 {
+		t.Fatalf("quota cooldown hid model: %+v", m)
 	}
 }

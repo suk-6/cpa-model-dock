@@ -58,11 +58,15 @@ type credentialModels struct {
 	Models    []string `json:"models"`
 }
 type runtimeAuth struct {
-	ID          string `json:"id"`
-	AuthIndex   string `json:"auth_index"`
-	Disabled    bool   `json:"disabled"`
-	Unavailable bool   `json:"unavailable"`
-	Status      string `json:"status"`
+	ID        string `json:"id"`
+	AuthIndex string `json:"auth_index"`
+	Disabled  bool   `json:"disabled"`
+	Status    string `json:"status"`
+	// CPA's runtime "unavailable" flag is a transient scheduler cooldown
+	// (quota exhaustion, retry backoff) and can stay set after it expires.
+	// It is deliberately not decoded: a cooling credential still owns its
+	// registrations, and CPA's scheduler picks a usable credential at request
+	// time. Excluding it hid models whenever one account hit its quota.
 	// Not sent by stock CPA v8.0.44. Accept only explicit runtime evidence
 	// from a future host; never derive this from model-name path segments.
 	Prefix string `json:"prefix"`
@@ -156,7 +160,7 @@ func (s *Service) Refresh(ctx context.Context) (result policy.Catalog) {
 		if !confirmed && credential.ID != "" {
 			auth, confirmed = runtimeByID[credential.ID]
 		}
-		enabled := confirmed && !auth.Disabled && !auth.Unavailable && !strings.EqualFold(strings.TrimSpace(auth.Status), "disabled")
+		enabled := confirmed && !auth.Disabled && !strings.EqualFold(strings.TrimSpace(auth.Status), "disabled")
 		if !confirmed && configRegistration(credential) {
 			enabled = true
 		}
