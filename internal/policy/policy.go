@@ -255,12 +255,64 @@ func (s *Snapshot) matchRuleNormalized(r Rule, n string) bool {
 		if !ok || v.Prerelease != "" {
 			return false
 		}
-		if f.Provider != "" {
-			return s.Routable(n, f.Provider)
+		if f.Provider != "" && !s.Routable(n, f.Provider) {
+			return false
 		}
-		return true
+		return !r.LatestOnly || s.familyLatest(f, t, n, v)
 	}
 	return false // alias rules publish aliases; they never allow direct model IDs.
+}
+
+// FamilyLatest reports whether name is a newest stable member of the family:
+// no routable stable member offered by the family provider is strictly newer.
+// Incomparable versions (for example dated and undated twins) all remain.
+func (s *Snapshot) FamilyLatest(familyID, name string) bool {
+	f, ok := s.Family(familyID)
+	if !ok {
+		return false
+	}
+	t, err := version.Compile(f.Template, f.AllowDated)
+	if err != nil {
+		return false
+	}
+	n := s.Normalize(name)
+	v, ok := t.Parse(n)
+	if !ok || v.Prerelease != "" {
+		return false
+	}
+	return s.familyLatest(f, t, n, v)
+}
+
+func (s *Snapshot) familyLatest(f Family, t *version.Template, n string, v version.Value) bool {
+	for _, m := range s.catalog.Models {
+		if !m.Routable {
+			continue
+		}
+		other := s.Normalize(m.ID)
+		if other == n {
+			continue
+		}
+		ov, ok := t.Parse(other)
+		if !ok || ov.Prerelease != "" {
+			continue
+		}
+		if f.Provider != "" && !hasProvider(m.Providers, f.Provider) {
+			continue
+		}
+		if cmp, ordered := version.Compare(ov, v); ordered && cmp > 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func hasProvider(providers []string, provider string) bool {
+	for _, p := range providers {
+		if strings.EqualFold(p, provider) {
+			return true
+		}
+	}
+	return false
 }
 
 func globMatch(pattern, name string) bool {

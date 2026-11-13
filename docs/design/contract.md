@@ -66,7 +66,8 @@ edit host config.
     }
   ],
   "rules": [                      // whitelist allow rules; evaluated only when whitelist_enabled
-    { "id": "r_1", "enabled": true, "kind": "family",  "value": "builtin:gpt-sol", "note": "" },
+    { "id": "r_1", "enabled": true, "kind": "family",  "value": "builtin:gpt-sol", "note": "",
+      "latest_only": false },     // family only: allow just the newest stable routable member(s)
     { "id": "r_2", "enabled": true, "kind": "exact",   "value": "claude-opus-4-5-20251101" },
     { "id": "r_3", "enabled": true, "kind": "pattern", "value": "claude-opus-*" },  // glob: * and ?
     { "id": "r_4", "enabled": true, "kind": "alias",   "value": "gpt-sol" }         // publish alias

@@ -514,14 +514,18 @@ func ruleMatch(s *policy.Snapshot, rule policy.Rule, model policy.Model) bool {
 			return false
 		}
 		if family.Provider != "" {
+			matched := false
 			for _, provider := range model.Providers {
 				if strings.EqualFold(provider, family.Provider) {
-					return true
+					matched = true
+					break
 				}
 			}
-			return false
+			if !matched {
+				return false
+			}
 		}
-		return true
+		return !rule.LatestOnly || s.FamilyLatest(rule.Value, model.ID)
 	}
 	// Remove alias hiding and routability from the individual rule match list.
 	state := s.StateCopy()

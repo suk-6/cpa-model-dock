@@ -166,7 +166,14 @@ export function createMockServer(options = {}) {
     if (rule.kind === 'exact' || rule.kind === 'alias') return normalize(rule.value) === name;
     if (rule.kind === 'pattern') return new RegExp(`^${key(rule.value).split(/([*?])/).map((part) => part === '*' ? '.*' : part === '?' ? '.' : escape(part)).join('')}$`).test(name);
     const family = familyById(policy, rule.value);
-    return Boolean(family && parseFamily(name, family) && (!family.provider || catalogModel(name)?.providers.includes(family.provider)));
+    const offered = (id) => !family.provider || catalogModel(id)?.providers.includes(family.provider);
+    const parsed = family && parseFamily(name, family);
+    if (!parsed || !offered(name)) return false;
+    // Latest-only family rules hide members that a routable sibling strictly outranks.
+    return !rule.latest_only || !models.some((model) => {
+      const other = key(model.id), sibling = other !== name && model.routable && offered(other) && parseFamily(other, family);
+      return sibling && compare(sibling, parsed) > 0;
+    });
   }
   function decide(input, policy = state, available = policyAvailable) {
     const name = normalize(input), steps = available ? [reason('normalized', `Matched as ${name}`, { model: name })] : [];
@@ -287,7 +294,7 @@ export function createMockServer(options = {}) {
           if (entry.kind !== undefined && typeof entry.kind !== 'string') add(`${path}.kind`, 'invalid_type', 'Expected rule kind text.', { expected: 'string' });
           else if (!['exact', 'family', 'pattern', 'alias'].includes(entry.kind)) add(`${path}.kind`, 'invalid_rule_kind', 'Use exact, family, pattern, or alias.');
           if (entry.note !== undefined && typeof entry.note !== 'string') add(`${path}.note`, 'invalid_type', 'Expected note text.', { expected: 'string' });
-          output.rules.push({ id, enabled: bool('enabled', true), kind: entry.kind, value, note: entry.note ?? '' });
+          output.rules.push({ id, enabled: bool('enabled', true), kind: entry.kind, value, note: entry.note ?? '', ...(entry.kind === 'family' && bool('latest_only', false) ? { latest_only: true } : {}) });
         }
       });
     }

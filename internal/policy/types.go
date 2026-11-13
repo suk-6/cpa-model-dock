@@ -36,6 +36,8 @@ type Rule struct {
 	Kind    string `json:"kind"`
 	Value   string `json:"value"`
 	Note    string `json:"note,omitempty"`
+	// LatestOnly narrows a family rule to its strictly newest routable members.
+	LatestOnly bool `json:"latest_only,omitempty"`
 }
 type State struct {
 	Schema    int       `json:"schema"`

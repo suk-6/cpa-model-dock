@@ -323,3 +323,32 @@ func TestValidationDetails(t *testing.T) {
 		t.Fatal("provider conflict not validated")
 	}
 }
+
+func TestFamilyRuleLatestOnly(t *testing.T) {
+	s := DefaultState()
+	s.Settings.WhitelistEnabled = true
+	s.Rules = []Rule{{ID: "r_opus", Enabled: true, Kind: "family", Value: "builtin:claude-opus", LatestOnly: true}}
+	c := Catalog{OK: true, Models: []Model{
+		{ID: "claude-opus-4-1-20250805", Providers: []string{"claude"}, Routable: true},
+		{ID: "claude-opus-4-5", Providers: []string{"claude"}, Routable: true},
+		{ID: "claude-opus-4-5-20251101", Providers: []string{"claude"}, Routable: true},
+		{ID: "claude-opus-5-preview", Providers: []string{"claude"}, Routable: true},
+		{ID: "claude-opus-6", Providers: []string{"claude"}, Routable: false},
+	}}
+	snap := New(s, c, true)
+	// Prereleases and unroutable members never outrank stable routable ones;
+	// incomparable dated/undated twins of the newest version both remain.
+	want := map[string]bool{"claude-opus-4-1-20250805": false, "claude-opus-4-5": true, "claude-opus-4-5-20251101": true, "claude-opus-5-preview": false}
+	for id, allowed := range want {
+		if d := snap.Decide(id); d.Allowed != allowed {
+			t.Fatalf("%s: %+v", id, d)
+		}
+	}
+	if !snap.FamilyLatest("builtin:claude-opus", "claude-opus-4-5") || snap.FamilyLatest("builtin:claude-opus", "claude-opus-4-1-20250805") {
+		t.Fatal("FamilyLatest disagrees with Decide")
+	}
+	s.Rules[0].LatestOnly = false
+	if d := New(s, c, true).Decide("claude-opus-4-1-20250805"); !d.Allowed {
+		t.Fatal(d)
+	}
+}

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.4 — 2026-11-13
+
+- Add a "latest model only" option to family allow rules. When enabled, older
+  stable versions in the family are hidden from model lists and blocked once a
+  newer routable stable version exists.
+- Tidy management UI spacing: consistent gaps between cards and sections, and
+  clearer spacing inside cards, rule rows and editor dialogs.
+
 ## 0.1.3 — 2026-11-09
 
 - Fix models disappearing from listings when some accounts hit their usage

@@ -185,7 +185,7 @@ func draftState(obj object, saved policy.State) (policy.State, []policy.Detail) 
 			case "aliases":
 				fields = map[string]any{"id": &a.ID, "name": &a.Name, "mode": &a.Mode, "target": &a.Target, "provider": &a.Provider, "enabled": &a.Enabled, "expose_original": &a.ExposeOriginal, "rewrite_response_model": &a.RewriteResponseModel}
 			case "rules":
-				fields = map[string]any{"id": &r.ID, "enabled": &r.Enabled, "kind": &r.Kind, "value": &r.Value, "note": &r.Note}
+				fields = map[string]any{"id": &r.ID, "enabled": &r.Enabled, "kind": &r.Kind, "value": &r.Value, "note": &r.Note, "latest_only": &r.LatestOnly}
 			}
 			for _, name := range fieldNames(fields) {
 				target := fields[name]
@@ -220,6 +220,9 @@ func draftState(obj object, saved policy.State) (policy.State, []policy.Detail) 
 			case "aliases":
 				saved.Aliases = append(saved.Aliases, a)
 			case "rules":
+				if r.Kind != "family" {
+					r.LatestOnly = false // Only family rules have a version order to narrow.
+				}
 				saved.Rules = append(saved.Rules, r)
 			}
 		}

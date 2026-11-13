@@ -240,7 +240,7 @@ curl -sS -i "$CPA_ORIGIN/v1/chat/completions" \
 | `families[]` | `id`, `name`, `template`, 선택 `provider`, `allow_dated` 생략 시 true. 기본 계열은 읽기 전용. |
 | `aliases[]` | `id`, `name`, `enabled`, `mode` (`pinned`/`auto`), 필수 `target`, `provider`, `expose_original`, nullable `rewrite_response_model`, `auto`. |
 | `aliases[].auto` | `family`, `include_prerelease`, `health_check`. 불리언 기본 false. |
-| `rules[]` | `id`, `enabled`, `kind` (`exact`/`family`/`pattern`/`alias`), `value`, 선택 `note`. 패턴은 정규식이 아닌 `*`, `?` 지원. |
+| `rules[]` | `id`, `enabled`, `kind` (`exact`/`family`/`pattern`/`alias`), `value`, 선택 `note`, 선택 `latest_only` (계열 규칙 전용: 사용 가능한 최신 정식 모델만 허용하고 이전 버전은 숨기고 차단). 패턴은 정규식이 아닌 `*`, `?` 지원. |
 
 **전체 settings의 두 불리언과 정수 갱신 주기는 필수입니다.** 별칭·규칙의 `enabled`와 사용자 계열의 `allow_dated`는 생략 시 true, `expose_original`과 auto 플래그는 false입니다. 예제는 의도를 분명히 하도록 값을 명시합니다. provider 생략은 빈 값이며 별칭 rewrite 생략/null은 전역 기본값을 상속합니다. 전체 교체에는 네 최상위 정책 필드가 모두 필요합니다. 새 별칭의 `id`는 생략해 서버가 생성하게 하거나 고유하고 안정적인 ID를 지정할 수 있습니다. 수정 시 ID를 유지합니다. 사용자 계열·규칙 ID는 같은 요청의 참조를 위해 지정할 수 있으며 모든 ID는 고유해야 합니다. 별칭은 대소문자 무시 기준으로 실제 모델·다른 별칭과 충돌할 수 없고 대상은 다른 Dock 별칭이 아닌 업스트림 모델을 가리킵니다. 알 수 없거나 라우팅 불가능한 대상도 저장할 수 있으며 추론은 503으로 실패합니다. 근거: [타입](internal/policy/types.go), [입력 처리](internal/mgmt/input.go), [검증](internal/policy/validate.go), [예제](examples/README.md).
 
